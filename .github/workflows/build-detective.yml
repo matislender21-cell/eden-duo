@@ -1,6 +1,7 @@
-# Builds the VAllhalla detective module (vallhalla/detective) for Android arm64, runs its
-# fake-memory test on the runner, and publishes the .so on the "detective-module" pre-release.
-name: Build detective module
+# Builds the VAllhalla native modules for Android arm64 after running their fake-memory tests
+# on the runner: the detective research tool (vallhalla/detective -> "detective-module"
+# pre-release) and the VAllhalla companion module (vallhalla/module -> "vallhalla-module").
+name: Build VAllhalla modules
 
 on:
   workflow_dispatch:
@@ -28,6 +29,10 @@ jobs:
           cmake --build build-host
           ./build-host/detective_test | tee test.log
           grep -q "chain0: \[main+123450\]+10 -> \[ \]+48" test.log
+          grep -q "AUTO OK" test.log
+          cmake -S vallhalla/module -B build-host-va -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-host-va
+          ./build-host-va/vallhalla_test
       - name: Build for Android arm64
         run: |
           NDK="$ANDROID_HOME/ndk/28.2.13676358"
@@ -37,6 +42,12 @@ jobs:
           cmake --build build-android
           "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D --defined-only build-android/010086500D3C8000.so
           "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" build-android/010086500D3C8000.so
+          cmake -S vallhalla/module -B build-android-va -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 -DANDROID_STL=c++_static
+          cmake --build build-android-va
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D --defined-only build-android-va/010086500D3C8000.so
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" build-android-va/010086500D3C8000.so
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -45,3 +56,7 @@ jobs:
           gh release create detective-module build-android/010086500D3C8000.so --prerelease \
             --target "${{ github.sha }}" --title "VAllhalla detective module (arm64)" \
             --notes "Research tool: finds the game value for dialogue vs mixing. Built from ${{ github.sha }}."
+          gh release delete vallhalla-module --yes --cleanup-tag || true
+          gh release create vallhalla-module build-android-va/010086500D3C8000.so --prerelease \
+            --target "${{ github.sha }}" --title "VAllhalla companion module (arm64)" \
+            --notes "Tells the companion when the game is talking or mixing. Built from ${{ github.sha }}."

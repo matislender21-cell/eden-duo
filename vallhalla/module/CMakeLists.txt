@@ -1,0 +1,26 @@
+# VAllhalla module (VA-11 Hall-A, 010086500D3C8000): a standalone shared object
+# loaded by Eden Duo's dual-screen runtime. Build for Android arm64 with the NDK toolchain
+# (-DANDROID_STL=c++_static); on a desktop host it also builds the fake-memory test.
+cmake_minimum_required(VERSION 3.22)
+project(vallhalla_module CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(EDEN_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../src" CACHE PATH "Eden Duo src directory")
+
+add_library(vallhalla SHARED vallhalla.cpp)
+target_include_directories(vallhalla PRIVATE "${EDEN_SRC}")
+set_target_properties(vallhalla PROPERTIES PREFIX "" OUTPUT_NAME "010086500D3C8000"
+                      CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vallhalla.exports"
+     "{ global: eden_dsmod_get_module; eden_dsmod_get_extensions; local: *; };\n")
+target_link_options(vallhalla PRIVATE
+    "-Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/vallhalla.exports" "-Wl,--no-undefined")
+if(ANDROID)
+    if(NOT ANDROID_STL STREQUAL "c++_static")
+        message(FATAL_ERROR "Build with -DANDROID_STL=c++_static")
+    endif()
+    target_link_options(vallhalla PRIVATE "-Wl,--exclude-libs,ALL")
+else()
+    add_executable(vallhalla_test test_vallhalla.cpp vallhalla.cpp)
+    target_include_directories(vallhalla_test PRIVATE "${EDEN_SRC}")
+endif()
