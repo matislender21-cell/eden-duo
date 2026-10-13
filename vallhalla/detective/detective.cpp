@@ -480,12 +480,17 @@ struct Detective {
         return true;
     }
 
-    // -1 not the pattern, 0 talking (1,0,0), 1 mixing (0,1,1)
-    int AfPattern(u64 x) const {
+    // -2 garbage (unreadable or not 0/1), -1 in between (all 0/1 but neither pattern, e.g. during a
+    // fade), 0 talking (1,0,0), 1 mixing (0,1,1). *bits gets the three switches as 3 bits.
+    int AfPattern(u64 x, int* bits = nullptr) const {
         double a, b, c;
-        if (!ReadF64(x, a) || !ReadF64(x + kAfS2, b) || !ReadF64(x + kAfS3, c)) return -1;
-        if (a == 1.0 && b == 0.0 && c == 0.0) return 0;
-        if (a == 0.0 && b == 1.0 && c == 1.0) return 1;
+        if (!ReadF64(x, a) || !ReadF64(x + kAfS2, b) || !ReadF64(x + kAfS3, c)) return -2;
+        auto bit = [](double d) { return d == 0.0 ? 0 : d == 1.0 ? 1 : -1; };
+        const int A = bit(a), B = bit(b), C = bit(c);
+        if (A < 0 || B < 0 || C < 0) return -2;
+        if (bits) *bits = A << 2 | B << 1 | C;
+        if (A == 1 && B == 0 && C == 0) return 0;
+        if (A == 0 && B == 1 && C == 1) return 1;
         return -1;
     }
 
@@ -544,8 +549,9 @@ struct Detective {
 
     bool AfCheck(AfCand& c) { // false = drop
         const int st = AfPattern(c.x);
-        if (st < 0) return ++c.strikes <= (c.seen == 3 ? kAfStrikes : 8);
+        if (st == -2) return ++c.strikes <= kAfStrikes; // garbage for a while: the block is gone
         c.strikes = 0;
+        if (st == -1) return true;                        // in between: keep the last state
         if (c.state != st) c.flipped = af_ticks;
         c.state = s8(st);
         c.seen |= u8(1u << st);
@@ -684,6 +690,23 @@ struct Detective {
                 std::snprintf(b, sizeof b, "H+%llx kind %u %u %u", (unsigned long long)(c.x - hb), k[0], k[1], k[2]);
                 where = b;
                 break;
+            }
+            if (!best) where.clear();
+            {
+                int n[3] = {0, 0, 0};
+                for (const auto& c : af) {
+                    const int st = AfPattern(c.x);
+                    if (st >= -1) ++n[st + 1];
+                }
+                char r[160];
+                std::snprintf(r, sizeof r, "now: %d talk-shaped, %d mix-shaped, %d in between", n[1], n[2], n[0]);
+                if (best) {
+                    int bits = 0;
+                    AfPattern(best->x, &bits);
+                    const size_t l = std::strlen(r);
+                    std::snprintf(r + l, sizeof r - l, " | %d%d%d", bits >> 2 & 1, bits >> 1 & 1, bits & 1);
+                }
+                pt("af.raw", r);
             }
             pt("af.where", where);
         }

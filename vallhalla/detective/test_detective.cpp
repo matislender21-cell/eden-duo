@@ -157,11 +157,13 @@ int main() {
                 (unsigned long long)(MODE - kHeap));
     // auto finder: plain play, no taps
     auto play = [&](int mixing, int ticks) {
+        Put<double>(real, mixing ? 0.0 : 1.0);           // in between: 0,0,0 or 1,1,1
+        for (int i = 0; i < 60; ++i) { ++tick_count; mod->tick(inst, &host); }
         set_state(mixing, 50);
         for (int i = 0; i < ticks; ++i) { ++tick_count; mod->tick(inst, &host); }
         ints.clear(); mod->sample(inst, &host);
-        std::printf("  play %-7s af.state=%lld | %s | %s\n", mixing ? "mixing" : "talking", (long long)ints["af.state"],
-                    texts["af.info"].c_str(), texts["af.where"].c_str());
+        std::printf("  play %-7s af.state=%lld | %s | %s | %s\n", mixing ? "mixing" : "talking", (long long)ints["af.state"],
+                    texts["af.info"].c_str(), texts["af.raw"].c_str(), texts["af.where"].c_str());
         return ints["af.state"];
     };
     play(0, 200);
