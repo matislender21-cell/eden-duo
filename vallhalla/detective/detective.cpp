@@ -664,6 +664,7 @@ struct Detective {
         }
         {
             pi("af.state", af_state);
+            pt("af.text", af_state == 1 ? "MIXING" : af_state == 0 ? "TALKING" : (af.empty() ? "SEARCHING" : "WAITING"));
             pi("af.scanning", af_scanning);
             pi("af.progress", s64(std::min<u64>(100, af_done * 100 / std::max<u64>(1, af_total))));
             std::snprintf(b, sizeof b, "%zu matches, %zu proven, scans %d%s", af.size(), AfProven(), af_scans,
