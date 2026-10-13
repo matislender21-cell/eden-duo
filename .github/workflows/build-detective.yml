@@ -1,0 +1,47 @@
+# Builds the VAllhalla detective module (vallhalla/detective) for Android arm64, runs its
+# fake-memory test on the runner, and publishes the .so on the "detective-module" pre-release.
+name: Build detective module
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [detective]
+
+permissions:
+  contents: write
+
+jobs:
+  module:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tools
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" --install "ndk;28.2.13676358"
+      - name: Test on the runner (fake game memory)
+        run: |
+          cmake -S vallhalla/detective -B build-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-host
+          ./build-host/detective_test | tee test.log
+          grep -q "chain0: \[main+123450\]+10 -> \[ \]+48" test.log
+      - name: Build for Android arm64
+        run: |
+          NDK="$ANDROID_HOME/ndk/28.2.13676358"
+          cmake -S vallhalla/detective -B build-android -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 -DANDROID_STL=c++_static
+          cmake --build build-android
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D --defined-only build-android/010086500D3C8000.so
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" build-android/010086500D3C8000.so
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete detective-module --yes --cleanup-tag || true
+          gh release create detective-module build-android/010086500D3C8000.so --prerelease \
+            --target "${{ github.sha }}" --title "VAllhalla detective module (arm64)" \
+            --notes "Research tool: finds the game value for dialogue vs mixing. Built from ${{ github.sha }}."
