@@ -55,10 +55,13 @@ int main() {
     void* inst = mod->create(&host, "{}");
     if (!inst || !ext || !ext->on_action) return 1;
 
+    // Like Eden Duo's input path: the snapshot is cleared, then only tick() runs before touches
+    // are hit-tested, so every output must come from tick() alone.
     auto run = [&](int n) {
-        for (int i = 0; i < n; ++i) mod->tick(inst, &host);
-        ints.clear();
-        mod->sample(inst, &host);
+        for (int i = 0; i < n; ++i) {
+            ints.clear();
+            mod->tick(inst, &host);
+        }
     };
     auto state = [&](int mixing) { // fade: switch 1 first, the other two a second later
         Put(real, mixing ? 0 : 1);
@@ -74,6 +77,7 @@ int main() {
 
     Triple(real, 1, 0, 0);
     run(300);
+    failures += !ints.count("va_overlay");
     expect("boot, talking, not sure yet", 1, -1);
     ext->on_action(inst, "skip", 0);
     run(1);

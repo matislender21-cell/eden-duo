@@ -247,6 +247,9 @@ void TickFn(void* inst, const EdenDsmodHostApi* host) {
     try {
         m->host = *host;
         m->Tick();
+        // Eden Duo hit-tests touches right after tick() (sample() only feeds the drawing), so the
+        // overlay gate must be in the snapshot here too or the input_block lets touches through.
+        m->Sample(host);
     } catch (...) {
         m->cands.clear(); // out of memory: start over, the overlay falls back to manual
         m->scanning = false;
