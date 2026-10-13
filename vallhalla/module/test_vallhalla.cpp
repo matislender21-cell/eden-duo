@@ -133,6 +133,49 @@ int main() {
     state(0);
     run(30);
     expect("and back to talking", 1, 0);
+    // ---- manual shake (we are in mixing now) ----
+    state(1);
+    run(30);
+    int zr = 0;
+    auto frame = [&](int64_t arg) { // one tick as the package runs it
+        ints.clear();
+        mod->tick(inst, &host);
+        if (arg >= 0) ext->on_action(inst, "shake", arg);
+        if (ints["va_zr_req"]) { // zr_auto + zr_ack
+            ++zr;
+            ext->on_action(inst, "zr_done", 0);
+        }
+    };
+    auto at = [](int x, int y) { return int64_t(x) * 4096 + y + 1; };
+    for (int i = 0; i < 120; ++i) frame(at(700, 650)); // grab and hold still
+    ext->on_action(inst, "shake_end", 0);
+    for (int i = 0; i < 30; ++i) frame(-1);
+    std::printf("grab without shaking: ZR presses %d (want 0)\n", zr);
+    failures += zr != 0;
+    int seen_frames = 0;
+    for (int i = 0; i < 40; ++i) { // shake left-right, 40 px each way
+        const int x = 700 + ((i / 4) % 2 ? 40 : -40) * (i % 4) / 4;
+        frame(at(x, 650));
+        seen_frames |= 1 << ints["va_wiggle"];
+    }
+    std::printf("after shaking: ZR %d (want 1), started %lld, frames used 0x%x\n", zr,
+                (long long)ints["va_started"], seen_frames);
+    failures += zr != 1 || ints["va_started"] != 1 || (seen_frames & 0x11) == 0;
+    for (int i = 0; i < 160; ++i) frame(at(700, 650));
+    std::printf("~3 s in: fill %lld blended %lld\n", (long long)ints["va_fill"], (long long)ints["va_blended"]);
+    failures += ints["va_fill"] < 50 || ints["va_fill"] > 70 || ints["va_blended"] != 0;
+    for (int i = 0; i < 140; ++i) frame(at(700, 650));
+    std::printf("~5.3 s in: fill %lld blended %lld\n", (long long)ints["va_fill"], (long long)ints["va_blended"]);
+    failures += ints["va_fill"] != 100 || ints["va_blended"] != 1;
+    ext->on_action(inst, "shake_end", 0);
+    for (int i = 0; i < 30; ++i) frame(-1);
+    std::printf("let go: ZR %d (want 2), started %lld, fill stays %lld\n", zr, (long long)ints["va_started"],
+                (long long)ints["va_fill"]);
+    failures += zr != 2 || ints["va_started"] != 0 || ints["va_fill"] != 100;
+    state(0);
+    run(30);
+    std::printf("served (talking): fill %lld\n", (long long)ints["va_fill"]);
+    failures += ints["va_fill"] != 0;
     mod->destroy(inst);
     std::printf("%s\n", failures ? "VALLHALLA FAIL" : "VALLHALLA OK");
     return failures ? 1 : 0;

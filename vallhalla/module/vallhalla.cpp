@@ -16,11 +16,19 @@
 //   va_mode     -1 not sure yet, 0 talking, 1 mixing
 //   va_proven   how many matches have been seen flipping
 //   va_status   short text for the test readout
+//   va_zr_req   1 while the module wants ZR pressed (the package presses it, then acks)
+//   va_started  1 while a shake-started mix is running in the game
+//   va_wiggle   0..4 shaker frame (0 far left, 2 middle, 4 far right) from the finger's motion
+//   va_fill     0..100 mixing time towards the blend point (5 s); va_blended 1 past it
 // Actions:
 //   skip        the player held a finger on the overlay (emergency): hide it until the mode
 //               next changes. A plain tap does nothing: the bar stays locked while talking.
 //   busy        pinged by the package while the player uses the bar; keeps an emergency
 //               opening alive (it closes after ~4 s without use)
+//   shake       every tick of a drag: argument = shaker finger x*4096 + y + 1, or 0 when the
+//               finger is not on the shaker. Real back-and-forth motion starts the mix (ZR).
+//   shake_end   the shaker was let go: stops the mix (ZR again) if a shake started it
+//   zr_done     the package pressed ZR for us
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
 
 #include <algorithm>
@@ -48,6 +56,10 @@ constexpr u64 kRescanProven = 3600;      // ~60 s between background scans once 
 constexpr u64 kRescanUnsure = 600;       // ~10 s while not sure yet
 constexpr u64 kFrameTicks = 15;          // 4 fps at 60 ticks/s
 constexpr u64 kEmergencyIdle = 240;      // an emergency opening closes after ~4 s unused
+constexpr u64 kBlendTicks = 300;         // the game blends a drink mixed for 5 s
+constexpr int kReversalPx = 18;          // a direction change counts after this much travel
+constexpr u64 kShakeWindow = 50;         // two reversals within ~0.8 s = shaking
+constexpr u64 kZrGap = 14;               // ticks between two of our ZR presses
 
 struct Cand {
     u64 x;
@@ -75,6 +87,17 @@ struct Module {
     bool manual = true;   // overlay while not sure (starts shown, hold hides, Mix shows)
     bool emergency = false; // the bar was opened by the hold; closes again when left unused
     u64 unused = 0;         // ticks since the player last touched the bar during an emergency
+
+    // manual shake
+    bool has_pos = false;
+    s64 px = 0, py = 0;     // last finger position on the shaker
+    s64 run_x = 0, run_y = 0; // travel in the current direction, per axis (signed)
+    u64 rev_ticks[2] = {0, 0}; // ticks of the last two direction reversals
+    double vxs = 0;         // smoothed horizontal speed, px per tick
+    bool started = false;   // we pressed ZR to start a mix that is still running
+    u64 mix_ticks = 0;      // how long the current / last mix has run
+    int zr_pending = 0;     // ZR presses still to be made
+    u64 last_zr = 0;        // tick of our last ZR press
 
     bool ReadF64(u64 a, double& d) const {
         const u8* p = host.get_read_pointer ? host.get_read_pointer(host.userdata, a, 8) : nullptr;
@@ -183,14 +206,75 @@ struct Module {
         return mode == 0 && !skip;
     }
 
+    void Reversal() {
+        rev_ticks[0] = rev_ticks[1];
+        rev_ticks[1] = ticks;
+    }
+
+    // One axis: a reversal is a change of direction after at least kReversalPx of travel.
+    void Axis(s64 d, s64& run) {
+        if (d == 0) return;
+        if ((d > 0) != (run > 0) && run != 0) {
+            if (run >= kReversalPx || run <= -kReversalPx) Reversal();
+            run = 0;
+        }
+        run += d;
+    }
+
+    void Shake(s64 arg) {
+        if (arg <= 0) { // not on the shaker
+            has_pos = false;
+            vxs = 0;
+            return;
+        }
+        const s64 x = (arg - 1) / 4096, y = (arg - 1) % 4096;
+        if (has_pos) {
+            const s64 dx = x - px, dy = y - py;
+            Axis(dx, run_x);
+            Axis(dy, run_y);
+            vxs = vxs * 0.6 + double(dx) * 0.4;
+        } else {
+            run_x = run_y = 0;
+            rev_ticks[0] = rev_ticks[1] = 0;
+        }
+        px = x;
+        py = y;
+        has_pos = true;
+        const bool shaking = rev_ticks[0] != 0 && ticks - rev_ticks[0] <= kShakeWindow;
+        if (shaking && !started) { // start the mix
+            started = true;
+            mix_ticks = 0;
+            ++zr_pending;
+        }
+    }
+
+    void ShakeEnd() {
+        has_pos = false;
+        vxs = 0;
+        if (started) { // stop the mix
+            started = false;
+            ++zr_pending;
+            if (mode < 0) manual = true; // like Mix: while unsure, the overlay comes back
+        }
+    }
+
+    int Wiggle() const {
+        if (!has_pos) return 2;
+        const double k = mix_ticks >= kBlendTicks && started ? 3.0 : 6.0; // blended: wilder
+        const int f = int(vxs / k + (vxs >= 0 ? 0.5 : -0.5));
+        return 2 + std::clamp(f, -2, 2);
+    }
+
     void Tick() {
         ++ticks;
+        if (started) ++mix_ticks;
         const bool before = Overlay();
         Track();
         if (mode != last_mode) {
             if (mode < 0) manual = before; // lost track: keep what the player sees
             skip = false;
             emergency = false;
+            if (mode == 0 && !started) mix_ticks = 0; // drink served: empty the bar
             last_mode = mode;
         }
         if (emergency && ++unused > kEmergencyIdle) { // opened by mistake (or done): lock again
@@ -208,12 +292,26 @@ struct Module {
         }
     }
 
-    bool OnAction(const std::string& a) {
+    bool OnAction(const std::string& a, s64 arg = 0) {
         if (a == "skip") {
             if (mode < 0) manual = false;
             else skip = true;
             emergency = !Overlay();
             unused = 0;
+            return true;
+        }
+        if (a == "shake") {
+            unused = 0;
+            Shake(arg);
+            return true;
+        }
+        if (a == "shake_end") {
+            ShakeEnd();
+            return true;
+        }
+        if (a == "zr_done") {
+            if (zr_pending > 0) --zr_pending;
+            last_zr = ticks;
             return true;
         }
         if (a == "busy") { // the player is using the bar (pinged while dragging / pressing)
@@ -232,6 +330,11 @@ struct Module {
         h->publish_i64(h->userdata, "va_frame", s64((ticks / kFrameTicks) & 1));
         h->publish_i64(h->userdata, "va_mode", mode);
         h->publish_i64(h->userdata, "va_proven", s64(Proven()));
+        h->publish_i64(h->userdata, "va_zr_req", zr_pending > 0 && ticks - last_zr >= kZrGap ? 1 : 0);
+        h->publish_i64(h->userdata, "va_started", started ? 1 : 0);
+        h->publish_i64(h->userdata, "va_wiggle", Wiggle());
+        h->publish_i64(h->userdata, "va_fill", s64(std::min<u64>(100, mix_ticks * 100 / kBlendTicks)));
+        h->publish_i64(h->userdata, "va_blended", mix_ticks >= kBlendTicks ? 1 : 0);
         const char* st = mode == 1 ? "auto: mixing"
                          : mode == 0 ? (skip ? "auto: talking (opened by hold)" : "auto: talking")
                          : cands.empty() ? "auto: searching"
@@ -282,9 +385,10 @@ void TickFn(void* inst, const EdenDsmodHostApi* host) {
 
 void Configure(void*, const EdenDsmodHostExtensions*) {}
 
-EdenDsmodBool OnAction(void* inst, const char* action, int64_t) {
+EdenDsmodBool OnAction(void* inst, const char* action, int64_t argument) {
     try {
-        return static_cast<Module*>(inst)->OnAction(action ? action : "") ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        return static_cast<Module*>(inst)->OnAction(action ? action : "", argument) ? EDEN_DSMOD_TRUE
+                                                                                       : EDEN_DSMOD_FALSE;
     } catch (...) {
         return EDEN_DSMOD_FALSE;
     }
