@@ -73,11 +73,24 @@ int main() {
     const uint64_t WG = kHeap + 0x4000000, WI = kHeap + 0x4100000;
     Put<uint64_t>(kMain + 0xB07818, WG);
     Put<uint64_t>(WG + 0x31E0, WI);
+    // auto finder targets: the real triple (moves to T2 later, like a new night), a decoy that
+    // never flips, and one that turns to garbage
+    const uint64_t T = kHeap + 0x5000000, T2 = kHeap + 0x5200000, DS = kHeap + 0x5100000, DG = kHeap + 0x5180000;
+    uint64_t real = T;
+    Put<double>(DS, 1.0); Put<double>(DS + 0x150, 0.0); Put<double>(DS + 0x340, 0.0);
+    Put<double>(DG, 1.0); Put<double>(DG + 0x150, 0.0); Put<double>(DG + 0x340, 0.0);
+    bool watch_on = true;
     auto set_state = [&](int mixing, int round) {
         Put<double>(MODE, mixing ? 1.0 : 0.0);
-        Put<double>(WI + 0x170, mixing ? 0.0 : 1.0);
-        Put<double>(WI + 0x170 + 0x150, mixing ? 1.0 : 0.0);
-        Put<double>(WI + 0x170 + 0x340, mixing ? 1.0 : 0.0);
+        Put<double>(real, mixing ? 0.0 : 1.0);
+        Put<double>(real + 0x150, mixing ? 1.0 : 0.0);
+        Put<double>(real + 0x340, mixing ? 1.0 : 0.0);
+        if (round == 5) Put<double>(DG + 0x150, 7.0);
+        if (watch_on) {
+            Put<double>(WI + 0x170, mixing ? 0.0 : 1.0);
+            Put<double>(WI + 0x170 + 0x150, mixing ? 1.0 : 0.0);
+            Put<double>(WI + 0x170 + 0x340, mixing ? 1.0 : 0.0);
+        }
         Put<int32_t>(DECOY, round < 3 ? (mixing ? 2 : 1) : 5);
         for (auto a : timers) Put<int32_t>(a, int32_t(1 + rng() % 64)); // timers change all the time
         for (auto a : noisy) if (rng() % 2) Put<int32_t>(a, int32_t(1 + rng() % 64));
@@ -142,5 +155,24 @@ int main() {
         std::printf("  chain%d: %s\n", i, texts["det.chain" + std::to_string(i)].c_str());
     std::printf("expected: top = H+%llx dbl talk=0 mix=1; chain [main+123450]+10 -> [ ]+48\n",
                 (unsigned long long)(MODE - kHeap));
+    // auto finder: plain play, no taps
+    auto play = [&](int mixing, int ticks) {
+        set_state(mixing, 50);
+        for (int i = 0; i < ticks; ++i) { ++tick_count; mod->tick(inst, &host); }
+        ints.clear(); mod->sample(inst, &host);
+        std::printf("  play %-7s af.state=%lld | %s | %s\n", mixing ? "mixing" : "talking", (long long)ints["af.state"],
+                    texts["af.info"].c_str(), texts["af.where"].c_str());
+        return ints["af.state"];
+    };
+    play(0, 200);
+    const bool a1 = play(1, 200) == 1, a2 = play(0, 200) == 0, a3 = play(1, 200) == 1;
+    // the game frees the block and builds a new one somewhere else (new night)
+    for (uint64_t o : {0x0ull, 0x150ull, 0x340ull}) Put<double>(real + o, 9.0);
+    real = T2;
+    watch_on = false; // a stale copy left frozen at "mixing"
+    play(0, 2000);    // background rescan finds T2
+    play(1, 300);
+    const bool a4 = play(0, 300) == 0, a5 = play(1, 300) == 1 && play(0, 300) == 0;
+    std::printf("auto finder: %s\n", a1 && a2 && a3 && a4 && a5 ? "AUTO OK" : "AUTO FAIL");
     mod->destroy(inst);
 }

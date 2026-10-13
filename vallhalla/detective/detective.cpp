@@ -77,6 +77,23 @@ constexpr WatchPath kWatch[] = {
 constexpr u64 kSwitchOff[3] = {0, 0x150, 0x340};
 constexpr int kSwitchMix[3] = {0, 1, 1};
 
+// Auto finder: no pointers. Scan the heap for the switch triple itself: doubles at X,
+// X+0x150, X+0x340 reading 1,0,0 (talking) or 0,1,1 (mixing). Keep every match, drop any that
+// leaves that pattern for long, and trust the ones that have been seen flipping both ways.
+constexpr u64 kAfS2 = 0x150, kAfS3 = 0x340;
+constexpr u64 kAfPagesPerTick = 1024;   // 4 MiB per tick
+constexpr size_t kAfMaxCands = 20000;
+constexpr int kAfStrikes = 90;          // ~1.5 s of bad reads before a candidate is dropped
+constexpr u64 kAfRescanTicks = 1800;    // ~30 s between background scans (the block can move)
+
+struct AfCand {
+    u64 x;
+    u8 seen;      // bit 0: talking pattern seen, bit 1: mixing pattern seen
+    u8 strikes;
+    s8 state;     // last valid pattern: 0 talking, 1 mixing
+    u64 flipped;  // tick of the last change between the two patterns
+};
+
 struct TopItem {
     u64 addr;
     int v0, v1;
@@ -106,6 +123,15 @@ struct Detective {
     std::vector<Chain> chains;
     std::vector<u64> heap_ptrs;   // heap locations that point near the target (level 2)
     std::string ptr_status;
+
+    // auto finder
+    std::vector<AfCand> af;
+    std::vector<Region> af_regions;
+    size_t af_region_i = 0;
+    u64 af_cursor = 0, af_done = 0, af_total = 1, af_wait = 0;
+    bool af_scanning = false;
+    int af_scans = 0;
+    s64 af_state = -1;
 
     // ranked candidates, recomputed once after each scan/filter (not every frame)
     std::vector<TopItem> top_cache;
@@ -447,7 +473,133 @@ struct Detective {
         }
     }
 
+    bool ReadF64(u64 a, double& d) const {
+        const u8* p = host.get_read_pointer ? host.get_read_pointer(host.userdata, a, 8) : nullptr;
+        if (!p) return false;
+        std::memcpy(&d, p, 8);
+        return true;
+    }
+
+    // -1 not the pattern, 0 talking (1,0,0), 1 mixing (0,1,1)
+    int AfPattern(u64 x) const {
+        double a, b, c;
+        if (!ReadF64(x, a) || !ReadF64(x + kAfS2, b) || !ReadF64(x + kAfS3, c)) return -1;
+        if (a == 1.0 && b == 0.0 && c == 0.0) return 0;
+        if (a == 0.0 && b == 1.0 && c == 1.0) return 1;
+        return -1;
+    }
+
+    void AfStartScan() {
+        af_regions.clear();
+        const u64 hb = host.get_heap_begin ? host.get_heap_begin(host.userdata) : 0;
+        const u64 he = host.get_heap_end ? host.get_heap_end(host.userdata) : 0;
+        if (he > hb) af_regions.push_back({hb & ~(kPage - 1), he, 'H'});
+        af_total = 1;
+        for (auto& r : af_regions) af_total += (r.end - r.begin) / kPage;
+        af_region_i = 0;
+        af_cursor = af_regions.empty() ? 0 : af_regions[0].begin;
+        af_done = 0;
+        af_scanning = !af_regions.empty();
+    }
+
+    void AfAdd(u64 x, int st) {
+        auto it = std::lower_bound(af.begin(), af.end(), x, [](const AfCand& c, u64 v) { return c.x < v; });
+        if (it != af.end() && it->x == x) return;
+        if (af.size() >= kAfMaxCands) return;
+        af.insert(it, {x, u8(1u << st), 0, s8(st), 0});
+    }
+
+    void AfScanStep() {
+        u64 budget = kAfPagesPerTick;
+        while (budget-- && af_region_i < af_regions.size()) {
+            const Region& r = af_regions[af_region_i];
+            if (af_cursor >= r.end) {
+                if (++af_region_i < af_regions.size()) af_cursor = af_regions[af_region_i].begin;
+                continue;
+            }
+            if (const u8* p = Page(af_cursor)) {
+                for (u64 off = 0; off < kPage; off += 8) {
+                    u64 w;
+                    std::memcpy(&w, p + off, 8);
+                    if (w != 0x3FF0000000000000ULL) continue; // 1.0
+                    const u64 y = af_cursor + off;
+                    if (AfPattern(y) == 0) AfAdd(y, 0);                         // y is switch 1
+                    if (y >= kAfS2 && AfPattern(y - kAfS2) == 1) AfAdd(y - kAfS2, 1); // y is switch 2
+                }
+            }
+            af_cursor += kPage;
+            ++af_done;
+        }
+        if (af_region_i >= af_regions.size()) {
+            af_scanning = false;
+            ++af_scans;
+            af_wait = kAfRescanTicks;
+        }
+    }
+
+    // Proven candidates are checked every tick; the rest round-robin, kAfCheckPerTick at a time.
+    static constexpr size_t kAfCheckPerTick = 2000;
+    size_t af_rr = 0;
+    u64 af_ticks = 0;
+
+    bool AfCheck(AfCand& c) { // false = drop
+        const int st = AfPattern(c.x);
+        if (st < 0) return ++c.strikes <= (c.seen == 3 ? kAfStrikes : 8);
+        c.strikes = 0;
+        if (c.state != st) c.flipped = af_ticks;
+        c.state = s8(st);
+        c.seen |= u8(1u << st);
+        return true;
+    }
+
+    void AfTrack() {
+        std::vector<u8> drop(af.size(), 0);
+        bool any = false;
+        for (size_t i = 0; i < af.size(); ++i)
+            if (af[i].seen == 3 && !AfCheck(af[i])) drop[i] = any = true;
+        for (size_t n = 0; n < std::min(af.size(), kAfCheckPerTick); ++n) {
+            if (af_rr >= af.size()) af_rr = 0;
+            AfCand& c = af[af_rr];
+            if (c.seen != 3 && !AfCheck(c)) drop[af_rr] = any = true;
+            ++af_rr;
+        }
+        if (any) {
+            size_t w = 0;
+            for (size_t i = 0; i < af.size(); ++i)
+                if (!drop[i]) af[w++] = af[i];
+            af.resize(w);
+        }
+        // the proven candidate that flipped most recently decides (a stale copy stops flipping)
+        const AfCand* best = nullptr;
+        for (const auto& c : af)
+            if (c.seen == 3 && c.strikes == 0 && (!best || c.flipped > best->flipped)) best = &c;
+        af_state = best ? best->state : -1;
+    }
+
+    size_t AfProven() const {
+        size_t n = 0;
+        for (const auto& c : af) n += c.seen == 3;
+        return n;
+    }
+
+    void AfTick() {
+        ++af_ticks;
+        AfTrack();
+        if (af_scanning) {
+            if (job == Job::Idle) AfScanStep(); // never compete with a tap scan
+        } else if (af_wait && AfProven() > 0) {
+            --af_wait;
+        } else if (af_wait > kAfRescanTicks / 3) {
+            af_wait = kAfRescanTicks / 3;     // nothing proven yet: look again sooner (~10 s)
+        } else if (af_wait) {
+            --af_wait;
+        } else {
+            AfStartScan();
+        }
+    }
+
     void Tick() {
+        AfTick();
         switch (job) {
         case Job::Build: StepBuild(); break;
         case Job::Filter: StepFilter(); break;
@@ -509,6 +661,30 @@ struct Detective {
             char n[32];
             std::snprintf(n, sizeof n, "det.top%zu", i);
             pt(n, line);
+        }
+        {
+            pi("af.state", af_state);
+            pi("af.scanning", af_scanning);
+            pi("af.progress", s64(std::min<u64>(100, af_done * 100 / std::max<u64>(1, af_total))));
+            std::snprintf(b, sizeof b, "%zu matches, %zu proven, scans %d%s", af.size(), AfProven(), af_scans,
+                          af_scanning ? " (scanning)" : "");
+            pt("af.info", b);
+            std::string where;
+            const AfCand* best = nullptr;
+            for (const auto& c : af)
+                if (c.seen == 3 && (!best || c.flipped > best->flipped)) best = &c;
+            for (const AfCand* cp = best; cp; cp = nullptr) {
+                const AfCand& c = *cp;
+                u32 k[3] = {0, 0, 0};
+                const u64 offs[3] = {0, kAfS2, kAfS3};
+                for (int j = 0; j < 3; ++j)
+                    if (const u8* p = host.get_read_pointer ? host.get_read_pointer(host.userdata, c.x + offs[j] + 8, 8) : nullptr)
+                        std::memcpy(&k[j], p + 4, 4);
+                std::snprintf(b, sizeof b, "H+%llx kind %u %u %u", (unsigned long long)(c.x - hb), k[0], k[1], k[2]);
+                where = b;
+                break;
+            }
+            pt("af.where", where);
         }
         // watch paths: -1 broken / not a 0-1 double, 0 talking, 1 mixing
         int votes[2] = {0, 0};
