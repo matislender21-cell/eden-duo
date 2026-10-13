@@ -19,6 +19,8 @@
 // Actions:
 //   skip        the player held a finger on the overlay (emergency): hide it until the mode
 //               next changes. A plain tap does nothing: the bar stays locked while talking.
+//   busy        pinged by the package while the player uses the bar; keeps an emergency
+//               opening alive (it closes after ~4 s without use)
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
 
 #include <algorithm>
@@ -45,6 +47,7 @@ constexpr int kStrikes = 90;             // ~1.5 s of garbage before a match is 
 constexpr u64 kRescanProven = 3600;      // ~60 s between background scans once sure
 constexpr u64 kRescanUnsure = 600;       // ~10 s while not sure yet
 constexpr u64 kFrameTicks = 15;          // 4 fps at 60 ticks/s
+constexpr u64 kEmergencyIdle = 240;      // an emergency opening closes after ~4 s unused
 
 struct Cand {
     u64 x;
@@ -69,7 +72,9 @@ struct Module {
     s64 mode = -1;        // decided state
     s64 last_mode = -1;
     bool skip = false;    // overlay dismissed by a tap until the mode changes
-    bool manual = true;   // overlay while not sure (starts shown, tap hides, Mix shows)
+    bool manual = true;   // overlay while not sure (starts shown, hold hides, Mix shows)
+    bool emergency = false; // the bar was opened by the hold; closes again when left unused
+    u64 unused = 0;         // ticks since the player last touched the bar during an emergency
 
     bool ReadF64(u64 a, double& d) const {
         const u8* p = host.get_read_pointer ? host.get_read_pointer(host.userdata, a, 8) : nullptr;
@@ -185,7 +190,13 @@ struct Module {
         if (mode != last_mode) {
             if (mode < 0) manual = before; // lost track: keep what the player sees
             skip = false;
+            emergency = false;
             last_mode = mode;
+        }
+        if (emergency && ++unused > kEmergencyIdle) { // opened by mistake (or done): lock again
+            emergency = false;
+            skip = false;
+            if (mode < 0) manual = true;
         }
         if (!scanning && mode < 0 && wait > kRescanUnsure) wait = kRescanUnsure; // lost it: look sooner
         if (scanning) {
@@ -201,6 +212,12 @@ struct Module {
         if (a == "skip") {
             if (mode < 0) manual = false;
             else skip = true;
+            emergency = !Overlay();
+            unused = 0;
+            return true;
+        }
+        if (a == "busy") { // the player is using the bar (pinged while dragging / pressing)
+            unused = 0;
             return true;
         }
         if (a == "mixed") {

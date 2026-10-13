@@ -81,7 +81,16 @@ int main() {
     expect("boot, talking, not sure yet", 1, -1);
     ext->on_action(inst, "skip", 0);
     run(1);
-    expect("tap the overlay while not sure", 0, -1);
+    expect("hold on the overlay while not sure", 0, -1);
+    run(250);
+    expect("left unused 4 s: locked again", 1, -1);
+    ext->on_action(inst, "skip", 0);
+    for (int i = 0; i < 10; ++i) {
+        run(100);
+        ext->on_action(inst, "busy", 0);
+    }
+    run(1);
+    expect("kept open while used (16 s)", 0, -1);
     ext->on_action(inst, "mixed", 0);
     run(1);
     expect("Mix pressed while not sure", 1, -1);
@@ -93,7 +102,11 @@ int main() {
     expect("back to talking", 1, 0);
     ext->on_action(inst, "skip", 0);
     run(1);
-    expect("tap the overlay while sure (skip)", 0, 0);
+    expect("hold on the overlay while sure", 0, 0);
+    run(250);
+    expect("left unused 4 s: locked again", 1, 0);
+    ext->on_action(inst, "skip", 0);
+    run(1);
     state(1);
     run(30);
     expect("mixing again", 0, 1);
