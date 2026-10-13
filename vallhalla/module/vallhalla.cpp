@@ -15,8 +15,10 @@
 //   va_frame    0/1, the overlay's animation frame at 4 fps
 //   va_mode     -1 not sure yet, 0 talking, 1 mixing
 //   va_proven   how many matches have been seen flipping
+//   va_status   short text for the test readout
 // Actions:
-//   skip        the player tapped the overlay: hide it (until the mode next changes)
+//   skip        the player held a finger on the overlay (emergency): hide it until the mode
+//               next changes. A plain tap does nothing: the bar stays locked while talking.
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
 
 #include <algorithm>
@@ -213,6 +215,11 @@ struct Module {
         h->publish_i64(h->userdata, "va_frame", s64((ticks / kFrameTicks) & 1));
         h->publish_i64(h->userdata, "va_mode", mode);
         h->publish_i64(h->userdata, "va_proven", s64(Proven()));
+        const char* st = mode == 1 ? "auto: mixing"
+                         : mode == 0 ? (skip ? "auto: talking (opened by hold)" : "auto: talking")
+                         : cands.empty() ? "auto: searching"
+                                         : "auto: waiting for first mix";
+        h->publish_text(h->userdata, "va_status", st);
     }
 };
 
