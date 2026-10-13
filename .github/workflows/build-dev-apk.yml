@@ -67,10 +67,15 @@ jobs:
         run: |
           chmod +x ./gradlew
           set -o pipefail
-          ./gradlew assembleMainlineRelWithDebInfo \
-            -Dorg.gradle.workers.max=$(nproc) \
-            -PYUZU_ANDROID_ARGS="-DUSE_CCACHE=false" \
-            --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
+          ARGS="-Dorg.gradle.workers.max=$(nproc) -PYUZU_ANDROID_ARGS=-DUSE_CCACHE=false"
+          # Pass 1: the CMake configure copies SDL's Java sources into externals/generated/sdl,
+          # but Kotlin compilation can run before it and miss them on a clean checkout.
+          # --continue lets the native build finish (and generate those sources) anyway.
+          ./gradlew assembleMainlineRelWithDebInfo $ARGS --continue 2>&1 \
+            | tee "$RUNNER_TEMP/build-pass1.log" || echo "Pass 1 failed; retrying with generated sources"
+          ls ../../externals/generated/sdl/java 2>/dev/null | head || echo "no generated SDL java yet"
+          # Pass 2: everything native is up to date; Kotlin now sees the SDL classes.
+          ./gradlew assembleMainlineRelWithDebInfo $ARGS --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
 
       # On failure, surface the log as annotations (readable without downloading logs).
       - name: Report build errors
