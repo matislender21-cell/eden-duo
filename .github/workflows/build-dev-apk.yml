@@ -59,10 +59,21 @@ jobs:
         working-directory: src/android
         run: |
           chmod +x ./gradlew
+          set -o pipefail
           ./gradlew assembleMainlineRelWithDebInfo \
             -Dorg.gradle.workers.max=$(nproc) \
             -PYUZU_ANDROID_ARGS="-DUSE_CCACHE=false" \
-            --stacktrace
+            --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      # On failure, surface the log as annotations (readable without downloading logs).
+      - name: Report build errors
+        if: failure()
+        run: |
+          LOG="$RUNNER_TEMP/build.log"
+          [ -f "$LOG" ] || exit 0
+          enc() { python3 -c 'import sys;d=sys.stdin.read()[-60000:];print(d.replace("%","%25").replace("\r","").replace("\n","%0A"))'; }
+          grep -n -i -E "error|failed|what went wrong|could not|cannot|not found|exception" "$LOG" | grep -v -E "^\S*:.*-Werror" | head -80 | enc | sed 's/^/::error title=Build error lines::/'
+          tail -n 150 "$LOG" | enc | sed 's/^/::error title=Build log tail::/'
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
