@@ -62,6 +62,21 @@ struct Chain {
 
 enum class Job { Idle, Build, Filter, PtrMain1, PtrHeap, PtrMain2 };
 
+// Watch: pointer paths found in session 2 (13 Oct 2026), followed live so a reboot can prove
+// which one is stable. [main+off]+d1 -> [ ]+d2 lands on switch 1; switches 2 and 3 sit
+// +0x150 and +0x340 further in the same block. Switch 1 reads 0 while mixing, 2 and 3 read 1.
+struct WatchPath {
+    char name;
+    u64 main_off, d1, d2;
+};
+constexpr WatchPath kWatch[] = {
+    {'A', 0xB07818, 0x31E0, 0x170},
+    {'B', 0xB19658, 0xBA0, 0x6B80},
+    {'C', 0xB19668, 0x12F0, 0x11E0},
+};
+constexpr u64 kSwitchOff[3] = {0, 0x150, 0x340};
+constexpr int kSwitchMix[3] = {0, 1, 1};
+
 struct TopItem {
     u64 addr;
     int v0, v1;
@@ -444,6 +459,17 @@ struct Detective {
     }
 
     // ---- publishing (every sample; the snapshot is cleared each tick) -----------------------
+    char n_buf[32];
+
+    int WatchRead(const WatchPath& w, int k) const {
+        u64 q, inner;
+        if (!host.main_size || !ReadU64(host.main_base + w.main_off, q) || !q) return -1;
+        if (!ReadU64(q + w.d1, inner) || !inner) return -1;
+        int v;
+        if (!ReadValue((inner + w.d2 + kSwitchOff[k]) | (u64(1) << 63), v) || v < 0 || v > 1) return -1;
+        return v == kSwitchMix[k] ? 1 : 0;
+    }
+
     void Sample(const EdenDsmodHostApi* h) {
         auto pi = [&](const char* n, s64 v) { h->publish_i64(h->userdata, n, v); };
         auto pt = [&](const char* n, const std::string& v) { h->publish_text(h->userdata, n, v.c_str()); };
@@ -484,6 +510,21 @@ struct Detective {
             std::snprintf(n, sizeof n, "det.top%zu", i);
             pt(n, line);
         }
+        // watch paths: -1 broken / not a 0-1 double, 0 talking, 1 mixing
+        int votes[2] = {0, 0};
+        for (const auto& w : kWatch) {
+            std::string row = std::string(1, w.name) + ":";
+            for (int k = 0; k < 3; ++k) {
+                const int st = WatchRead(w, k);
+                if (st >= 0) ++votes[st];
+                row += st < 0 ? "  --  " : (st ? "  MIX " : "  TALK");
+            }
+            std::snprintf(n_buf, sizeof n_buf, "det.w%c", w.name);
+            pt(n_buf, row);
+        }
+        pi("det.watch", votes[1] > votes[0] ? 1 : (votes[0] > votes[1] ? 0 : -1));
+        std::snprintf(b, sizeof b, "%d say mixing, %d say talking", votes[1], votes[0]);
+        pt("det.votes", b);
         // live state guess from the top candidate (the overlay test uses this)
         s64 live = -1;
         if (!top.empty()) {

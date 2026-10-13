@@ -17,7 +17,7 @@ extern "C" const EdenDsmodModuleExtensions* eden_dsmod_get_extensions(uint32_t, 
 
 namespace {
 constexpr uint64_t kHeap = 0x800000000ULL, kHeapSize = 96ull << 20;
-constexpr uint64_t kMain = 0x8000000ULL, kMainSize = 8ull << 20;
+constexpr uint64_t kMain = 0x8000000ULL, kMainSize = 16ull << 20;
 constexpr uint64_t kHoleBegin = kHeap + (40ull << 20), kHoleEnd = kHoleBegin + (8ull << 20);
 std::vector<uint8_t> heap(kHeapSize), mainmem(kMainSize);
 std::map<std::string, int64_t> ints;
@@ -69,8 +69,15 @@ int main() {
     const uint64_t DECOY = kHeap + 0x3456780;
     Put<uint64_t>(kMain + 0x123450, G);
     Put<uint64_t>(G + 0x10, S);
+    // watch path A as found on the device: [main+B07818]+31E0 -> [ ]+170 (+150, +340)
+    const uint64_t WG = kHeap + 0x4000000, WI = kHeap + 0x4100000;
+    Put<uint64_t>(kMain + 0xB07818, WG);
+    Put<uint64_t>(WG + 0x31E0, WI);
     auto set_state = [&](int mixing, int round) {
         Put<double>(MODE, mixing ? 1.0 : 0.0);
+        Put<double>(WI + 0x170, mixing ? 0.0 : 1.0);
+        Put<double>(WI + 0x170 + 0x150, mixing ? 1.0 : 0.0);
+        Put<double>(WI + 0x170 + 0x340, mixing ? 1.0 : 0.0);
         Put<int32_t>(DECOY, round < 3 ? (mixing ? 2 : 1) : 5);
         for (auto a : timers) Put<int32_t>(a, int32_t(1 + rng() % 64)); // timers change all the time
         for (auto a : noisy) if (rng() % 2) Put<int32_t>(a, int32_t(1 + rng() % 64));
@@ -122,6 +129,11 @@ int main() {
     std::printf("  live=%lld (mode now %s)\n", (long long)ints["det.live"], "talking");
     set_state(1, 99); ints.clear(); mod->sample(inst, &host);
     std::printf("  after switching the game to mixing: live=%lld\n", (long long)ints["det.live"]);
+    std::printf("  watch=%lld (%s) | %s | %s | %s\n", (long long)ints["det.watch"], texts["det.votes"].c_str(),
+                texts["det.wA"].c_str(), texts["det.wB"].c_str(), texts["det.wC"].c_str());
+    set_state(0, 99); ints.clear(); mod->sample(inst, &host);
+    std::printf("  talking again: watch=%lld (%s) | %s\n", (long long)ints["det.watch"], texts["det.votes"].c_str(),
+                texts["det.wA"].c_str());
     // pointer search on the top candidate
     ext->on_action(inst, "pointer", 0);
     int t = run_until_idle();
