@@ -62,6 +62,11 @@ struct Chain {
 
 enum class Job { Idle, Build, Filter, PtrMain1, PtrHeap, PtrMain2 };
 
+struct TopItem {
+    u64 addr;
+    int v0, v1;
+};
+
 struct Detective {
     EdenDsmodHostApi host{};
     Pool pool[2];
@@ -86,6 +91,11 @@ struct Detective {
     std::vector<Chain> chains;
     std::vector<u64> heap_ptrs;   // heap locations that point near the target (level 2)
     std::string ptr_status;
+
+    // ranked candidates, recomputed once after each scan/filter (not every frame)
+    std::vector<TopItem> top_cache;
+    size_t both_cache = 0;
+    bool dirty = true;
 
     const u8* Page(u64 page) const {
         return host.get_read_pointer ? host.get_read_pointer(host.userdata, page, kPage) : nullptr;
@@ -131,6 +141,9 @@ struct Detective {
         const std::string a = action ? action : "";
         if (a == "reset") {
             for (auto& p : pool) p = Pool{};
+            top_cache.clear();
+            both_cache = 0;
+            dirty = true;
             marks[0] = marks[1] = 0;
             last_label = -1;
             job = Job::Idle;
@@ -232,6 +245,7 @@ struct Detective {
         if (done) {
             pl.built = true;
             job = Job::Idle;
+            dirty = true;
             Summarize("Pool ready.");
         }
     }
@@ -286,40 +300,54 @@ struct Detective {
                 StartBuild(); // first tap in this state: also collect its own pool
                 return;
             }
+            dirty = true;
             Summarize("Filtered.");
         }
     }
 
-    struct TopItem {
-        u64 addr;
-        int v0, v1;
-    };
-
-    std::vector<TopItem> Top() const {
-        std::vector<TopItem> out;
-        for (const auto& pl : pool) {
-            for (size_t i = 0; i < pl.size() && out.size() < 4096; ++i) {
-                if (pl.v[0][i] >= 0 && pl.v[1][i] >= 0) out.push_back({pl.addr[i], pl.v[0][i], pl.v[1][i]});
-            }
-        }
-        // prefer doubles, then lower addresses (globals tend to be allocated early)
-        std::sort(out.begin(), out.end(), [](const TopItem& a, const TopItem& b) {
-            const bool fa = a.addr >> 63, fb = b.addr >> 63;
-            if (fa != fb) return fa > fb;
-            return (a.addr & ~(u64(1) << 63)) < (b.addr & ~(u64(1) << 63));
-        });
-        // drop duplicates (same address as int and double low word)
-        out.erase(std::unique(out.begin(), out.end(),
-                              [](const TopItem& a, const TopItem& b) { return a.addr == b.addr; }),
-                  out.end());
-        return out;
+    // Rank every candidate seen in both states. Best first: GameMaker doubles, then enum-like
+    // values (both states <= 8), then lower addresses (globals are allocated early).
+    static bool Better(const TopItem& a, const TopItem& b) {
+        const bool fa = a.addr >> 63, fb = b.addr >> 63;
+        if (fa != fb) return fa > fb;
+        const bool sa = std::max(a.v0, a.v1) <= 8, sb = std::max(b.v0, b.v1) <= 8;
+        if (sa != sb) return sa > sb;
+        return (a.addr & ~(u64(1) << 63)) < (b.addr & ~(u64(1) << 63));
     }
 
-    size_t BothCount() const {
-        size_t n = 0;
+    void Rank() {
+        dirty = false;
+        // bounded heap of the 256 best (front = worst kept), so millions of candidates cost
+        // no extra memory
+        std::vector<TopItem> best;
+        best.reserve(257);
+        both_cache = 0;
         for (const auto& pl : pool)
-            for (size_t i = 0; i < pl.size(); ++i) n += pl.v[0][i] >= 0 && pl.v[1][i] >= 0;
-        return n;
+            for (size_t i = 0; i < pl.size(); ++i) {
+                if (pl.v[0][i] < 0 || pl.v[1][i] < 0) continue;
+                ++both_cache;
+                const TopItem t{pl.addr[i], pl.v[0][i], pl.v[1][i]};
+                if (best.size() == 256 && !Better(t, best.front())) continue;
+                best.push_back(t);
+                std::push_heap(best.begin(), best.end(), Better);
+                if (best.size() > 256) {
+                    std::pop_heap(best.begin(), best.end(), Better);
+                    best.pop_back();
+                }
+            }
+        std::sort_heap(best.begin(), best.end(), Better);
+        top_cache.clear();
+        for (const auto& t : best) {
+            if (top_cache.size() >= 64) break;
+            bool dup = false; // the same address can sit in both pools
+            for (const auto& k : top_cache) dup |= k.addr == t.addr;
+            if (!dup) top_cache.push_back(t);
+        }
+    }
+
+    const std::vector<TopItem>& Top() {
+        if (dirty) Rank();
+        return top_cache;
     }
 
     void Summarize(const char* what) {
@@ -433,17 +461,12 @@ struct Detective {
                       (unsigned long long)(host.get_heap_end ? host.get_heap_end(host.userdata) : 0),
                       (unsigned long long)host.main_base, (unsigned long long)host.main_size);
         pt("det.regions", b);
-        // the top list is cheap only while small; skip it during big jobs
-        size_t both = 0;
-        std::vector<TopItem> top;
-        if (job == Job::Idle || job == Job::PtrMain1 || job == Job::PtrHeap || job == Job::PtrMain2) {
-            if (pool[0].size() + pool[1].size() < 100000) {
-                top = Top();
-                both = top.size();
-            } else {
-                both = BothCount();
-            }
-        }
+        // ranking happens once after each job; while a job runs the old list stays hidden
+        const bool idle_ish = job == Job::Idle || job == Job::PtrMain1 || job == Job::PtrHeap || job == Job::PtrMain2;
+        if (idle_ish && dirty && job == Job::Idle) Rank();
+        static const std::vector<TopItem> kNone;
+        const std::vector<TopItem>& top = idle_ish ? top_cache : kNone;
+        const size_t both = idle_ish ? both_cache : 0;
         pi("det.both", s64(both));
         for (size_t i = 0; i < kTopShown; ++i) {
             std::string line;
