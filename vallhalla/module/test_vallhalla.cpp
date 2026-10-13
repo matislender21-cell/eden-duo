@@ -172,6 +172,13 @@ int main() {
     std::printf("let go: ZR %d (want 2), started %lld, fill stays %lld\n", zr, (long long)ints["va_started"],
                 (long long)ints["va_fill"]);
     failures += zr != 2 || ints["va_started"] != 0 || ints["va_fill"] != 100;
+    for (int i = 0; i < 40; ++i) { // shake again, then the drag is cancelled (no shake_end)
+        const int x = 700 + ((i / 4) % 2 ? 40 : -40) * (i % 4) / 4;
+        frame(at(x, 650));
+    }
+    for (int i = 0; i < 40; ++i) frame(-1);
+    std::printf("cancelled drag: ZR %d (want 4), started %lld\n", zr, (long long)ints["va_started"]);
+    failures += zr != 4 || ints["va_started"] != 0;
     state(0);
     run(30);
     std::printf("served (talking): fill %lld\n", (long long)ints["va_fill"]);

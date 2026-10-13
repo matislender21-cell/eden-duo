@@ -98,6 +98,7 @@ struct Module {
     u64 mix_ticks = 0;      // how long the current / last mix has run
     int zr_pending = 0;     // ZR presses still to be made
     u64 last_zr = 0;        // tick of our last ZR press
+    u64 last_shake = 0;     // tick of the last shake sample on the shaker
 
     bool ReadF64(u64 a, double& d) const {
         const u8* p = host.get_read_pointer ? host.get_read_pointer(host.userdata, a, 8) : nullptr;
@@ -227,6 +228,7 @@ struct Module {
             vxs = 0;
             return;
         }
+        last_shake = ticks;
         const s64 x = (arg - 1) / 4096, y = (arg - 1) % 4096;
         if (has_pos) {
             const s64 dx = x - px, dy = y - py;
@@ -268,6 +270,9 @@ struct Module {
     void Tick() {
         ++ticks;
         if (started) ++mix_ticks;
+        // A drag that ends without a drop (second finger, page change) sends no shake_end: once
+        // the shaker's samples stop for ~1/3 s, treat it as let go so the mix never runs on.
+        if (has_pos && ticks - last_shake > 20) ShakeEnd();
         const bool before = Overlay();
         Track();
         if (mode != last_mode) {
