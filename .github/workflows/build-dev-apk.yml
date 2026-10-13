@@ -24,22 +24,26 @@ jobs:
                       /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
           df -h /
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
+      # GitHub's Ubuntu runners ship the Android SDK; use its own sdkmanager.
       - name: Install NDK, CMake and platform
         run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "ndk;28.2.13676358" "cmake;3.31.6" "platforms;android-36"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          ls -la "$SDKM"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" --install "ndk;28.2.13676358" "cmake;3.31.6" "platforms;android-36"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
       - name: Cache dependencies and Gradle
         uses: actions/cache@v4
