@@ -13,6 +13,9 @@ concurrency:
   group: build-dev-apk-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   android:
     runs-on: ubuntu-24.04
@@ -94,3 +97,17 @@ jobs:
           name: EdenDuo-Dev-${{ github.sha }}
           path: src/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
+
+      # A direct APK download on the fork's Releases page (easier on a handheld than the
+      # zipped Actions artifact). Replaced by each new build.
+      - name: Publish test release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK=$(find src/android/app/build/outputs/apk -name '*.apk' | head -1)
+          cp "$APK" EdenDuo-Dev.apk
+          gh release delete vallhalla-dev --yes --cleanup-tag || true
+          gh release create vallhalla-dev EdenDuo-Dev.apk --prerelease \
+            --target "${{ github.sha }}" \
+            --title "Eden Duo Dev - VAllhalla test build" \
+            --notes "Test build of Eden Duo 1.2.1 with diagonal stick tokens for companions (LX-LY+ and friends). Installs as a separate app, Eden Duo Dev, beside the official Eden Duo. Built from commit ${{ github.sha }}."
