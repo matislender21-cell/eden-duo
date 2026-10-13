@@ -1,0 +1,42 @@
+Dual-screen companion input actions — runtime 20
+
+Use the existing "kind": "button" action and "button" token field. No game-specific
+API or native module ABI change is required. Companions using the new forms must
+set "min_runtime": 20 in their dualscreen/manifest.json (and package.json when
+packaged), so older hosts reject them rather than misinterpreting the input.
+
+Examples inside the manifest's actions object:
+
+"walk": {"kind": "button", "button": "LStick(0.3,-0.6)", "frames": 12},
+"aim": {"kind": "button", "button": "RStick(-0.8,0.2)", "frames": 8},
+"diagonal": {"kind": "button", "button": "LX-LY+", "frames": 4},
+"confirm_direction": {"kind": "button", "button": "LStick(0.6,0.8)+A", "frames": 4},
+"center": {"kind": "button", "button": "LStick(0,0)", "frames": 2}
+
+LStick(x,y) and RStick(x,y) accept finite decimal/scientific numbers. Coordinates
+use the virtual controller convention: positive X is right, positive Y is up.
+Vectors inside the unit circle preserve their analog strength. Larger vectors
+are normalized to the circle without changing their direction. NaN, infinity,
+overflowing numeric literals and malformed tokens are rejected.
+
+Existing cardinal tokens LX+, LX-, LY+, LY-, RX+, RX-, RY+, RY- continue to work.
+Compact diagonal tokens join two different axes of the same stick, in either
+order, for example LX-LY+ or RY+RX-. Diagonals have approximately 0.707 strength
+on each axis. This supports the submitted diagonal-stick patch's spelling.
+
+Join buttons and/or sticks with '+'. For a positive cardinal followed by a
+button, both plus signs are needed: LX++A. Prefer LStick(1,0)+A for clarity.
+One chord may target both sticks but may not specify the same stick twice;
+express its combined X/Y position in one vector instead. The entire chord is
+validated before injecting any input, including counter actions' button_neg.
+
+Existing frames/repeat/gap/counter behavior applies. Inputs reach player 1 and
+the handheld port. A hold lasts at least two runtime ticks; its stick returns
+to center when the hold expires. Teardown clears held inputs and queued presses.
+A later action on the same stick replaces its position and preserves the longer
+remaining hold, matching the previous cardinal-input behavior.
+
+Validation: parser tests cover both sticks, axis orders, all quadrants, analog
+strength, normalization, invalid numbers and chords. A production-method host
+fixture checks scheduling, release, teardown and rejection with a fake gamepad.
+Actual game/radial-menu behavior still needs testing in the target game.

@@ -27,11 +27,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <optional>
-#include <string_view>
 #include "common/dsmod_dev_tools.h"
 #include "common/logging.h"
 #include "core/core.h"
+#include "core/mods/mod_input_tokens.h"
 #include "core/mods/mod_runtime.h"
 #include "core/mods/mod_runtime_shared.h"
 #include "core/mods/mod_settings.h"
@@ -77,49 +76,12 @@ InputCommon::VirtualGamepad::VirtualButton ParseButton(const std::string& name, 
 
 namespace {
 
-/// A stick shove: which stick, and where it is held.
-struct StickShove {
-    bool right{};
-    float x{};
-    float y{};
-};
-
-/// "LX+", "RY-": one axis at full deflection. "LX-LY+", "RY+RX-": both axes of one stick, in
-/// either order, for the diagonals (each axis at 1/sqrt(2), so the stick stays on the unit
-/// circle). Games that pick a menu slot by stick angle need the diagonals; two single-axis
-/// shoves on one tick cannot make one, because each shove zeroes the other axis.
-std::optional<StickShove> ParseStickShove(std::string_view name) {
-    const auto axis = [](std::string_view t, char& stick, char& ax, float& v) {
-        if (t.size() != 3 || (t[0] != 'L' && t[0] != 'R') || (t[1] != 'X' && t[1] != 'Y') ||
-            (t[2] != '+' && t[2] != '-')) {
-            return false;
-        }
-        stick = t[0];
-        ax = t[1];
-        v = t[2] == '+' ? 1.0f : -1.0f;
-        return true;
-    };
-    char s1{}, a1{};
-    float v1{};
-    if (name.size() == 3) {
-        if (!axis(name, s1, a1, v1)) {
-            return std::nullopt;
-        }
-        return StickShove{s1 == 'R', a1 == 'X' ? v1 : 0.0f, a1 == 'Y' ? v1 : 0.0f};
-    }
-    if (name.size() == 6) {
-        char s2{}, a2{};
-        float v2{};
-        if (!axis(name.substr(0, 3), s1, a1, v1) || !axis(name.substr(3, 3), s2, a2, v2) ||
-            s1 != s2 || a1 == a2) {
-            return std::nullopt;
-        }
-        constexpr float Diagonal = 0.70710678f;
-        const float x = (a1 == 'X' ? v1 : v2) * Diagonal;
-        const float y = (a1 == 'Y' ? v1 : v2) * Diagonal;
-        return StickShove{s1 == 'R', x, y};
-    }
-    return std::nullopt;
+auto ParseInputChord(std::string_view name) {
+    return InputTokens::ParseChord(name, [](std::string_view button) {
+        bool ok{};
+        ParseButton(std::string{button}, ok);
+        return ok;
+    });
 }
 
 } // namespace
@@ -242,44 +204,38 @@ bool ModRuntime::PressToken(const std::string& name, u32 frames) {
     if (pad == nullptr || name.empty()) {
         return false;
     }
-    // "RX+", "LY-" and friends name a stick shove rather than a button; "LX-LY+" names a
-    // diagonal. Checked before chords, because "LX+LY-" holds a '+' that does not join a chord.
-    if (const auto shove = ParseStickShove(name)) {
-        const bool right = shove->right;
-        const auto which = right ? InputCommon::VirtualGamepad::VirtualStick::Right
-                                 : InputCommon::VirtualGamepad::VirtualStick::Left;
-        for (const std::size_t pl : {std::size_t{0}, std::size_t{8}}) {
-            pad->SetStickPosition(pl, which, shove->x, shove->y);
-        }
-        const u32 hold = std::max(2u, frames);
-        if (auto it = std::find_if(held_sticks.begin(), held_sticks.end(),
-                                   [right](const HeldStick& held) { return held.right == right; });
-            it != held_sticks.end()) {
-            it->ticks_left = std::max(it->ticks_left, hold);
-        } else {
-            held_sticks.push_back(HeldStick{right, hold});
-        }
-        return true;
-    }
-    // "L+R": a chord, every part pressed on the same tick (a trailing '+' is a stick token).
-    if (const auto plus = name.find('+'); plus != std::string::npos && name.back() != '+') {
-        return PressToken(name.substr(0, plus), frames) && PressToken(name.substr(plus + 1), frames);
-    }
-    bool ok{};
-    const auto button = ParseButton(name, ok);
-    if (!ok) {
-        return false;
-    }
-    for (const std::size_t pl : {std::size_t{0}, std::size_t{8}}) {
-        pad->SetButtonState(pl, button, true);
-    }
+    const auto tokens = ParseInputChord(name);
+    if (!tokens) return false;
     const u32 hold = std::max(2u, frames);
-    if (auto it = std::find_if(held_buttons.begin(), held_buttons.end(),
-                               [&name](const HeldButton& held) { return held.name == name; });
-        it != held_buttons.end()) {
-        it->ticks_left = std::max(it->ticks_left, hold);
-    } else {
-        held_buttons.push_back(HeldButton{name, hold});
+    for (const auto& token : *tokens) {
+        if (token.stick) {
+            const auto& stick = *token.stick;
+            const auto which = stick.right ? InputCommon::VirtualGamepad::VirtualStick::Right
+                                           : InputCommon::VirtualGamepad::VirtualStick::Left;
+            for (const std::size_t pl : {std::size_t{0}, std::size_t{8}}) {
+                pad->SetStickPosition(pl, which, stick.x, stick.y);
+            }
+            if (auto it = std::find_if(held_sticks.begin(), held_sticks.end(),
+                                      [&](const HeldStick& held) { return held.right == stick.right; });
+                it != held_sticks.end()) {
+                it->ticks_left = std::max(it->ticks_left, hold);
+            } else {
+                held_sticks.push_back(HeldStick{stick.right, hold});
+            }
+        } else {
+            bool ok{};
+            const auto button = ParseButton(std::string{token.name}, ok);
+            for (const std::size_t pl : {std::size_t{0}, std::size_t{8}}) {
+                pad->SetButtonState(pl, button, true);
+            }
+            if (auto it = std::find_if(held_buttons.begin(), held_buttons.end(),
+                                      [&](const HeldButton& held) { return held.name == token.name; });
+                it != held_buttons.end()) {
+                it->ticks_left = std::max(it->ticks_left, hold);
+            } else {
+                held_buttons.push_back(HeldButton{std::string{token.name}, hold});
+            }
+        }
     }
     return true;
 }
@@ -669,22 +625,8 @@ ModRuntime::ActionResult ModRuntime::RunAction(const Action& action, const State
                         action.button);
             return ActionResult::Skipped;
         }
-        // A stick shove ("RX+") is a legitimate action token even though it is not a button.
-        // ("LX-LY+", a diagonal, is one too.)
-        const auto is_stick = [](const std::string& n) { return ParseStickShove(n).has_value(); };
-        // A chord ("L+R") is valid when every part is a button.
-        const auto is_chord = [](const std::string& n) {
-            const auto plus = n.find('+');
-            if (plus == std::string::npos || n.back() == '+')
-                return false;
-            bool a{}, b{};
-            ParseButton(n.substr(0, plus), a);
-            ParseButton(n.substr(plus + 1), b);
-            return a && b;
-        };
-        bool ok{};
-        ParseButton(action.button, ok);
-        if (!ok && !is_stick(action.button) && !is_chord(action.button)) {
+        if (!ParseInputChord(action.button) ||
+            (!action.button_neg.empty() && !ParseInputChord(action.button_neg))) {
             return ActionResult::Skipped;
         }
         // Press on both the handheld and player-1 ports; npad polls at 1 kHz, so hold a few ticks.

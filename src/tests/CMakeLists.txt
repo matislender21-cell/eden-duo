@@ -17,6 +17,7 @@ add_executable(tests
     common/undefined_fix.cpp
     common/unique_function.cpp
     core/core_timing.cpp
+    core/mods/input_tokens.cpp
     core/mods/asset_sources.cpp
     core/mods/map_cache_identity.cpp
     core/mods/map_overview.cpp

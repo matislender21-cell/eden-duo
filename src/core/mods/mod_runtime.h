@@ -170,7 +170,8 @@ namespace Core::Mods {
 ///          Ready/page/auxiliary helper lifecycle; exact bounded package metadata and transactional
 ///          reload validation. Metadata is 4 MiB, plans 1 MiB, native modules 64 MiB; ABI 1 stays.
 ///          This boundary does not implement a controller binding router or guest viewport API.
-inline constexpr u32 DualScreenRuntimeVersion = 19;
+///   20     arbitrary analog stick vectors, normalized diagonal aliases and atomic input chords.
+inline constexpr u32 DualScreenRuntimeVersion = 20;
 
 /// Regions a redraw-worker job painted into its canvas but did not publish because it went stale
 /// (runtime 13). Before runtime 13 a job already running when the next was dispatched finished

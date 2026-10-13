@@ -95,7 +95,7 @@ TEST_CASE("DSMod guest helper runtime boundary gates older hosts", "[dsmod][load
     REQUIRE(IsLoadPlanRuntimeCompatible(2, required, DualScreenRuntimeVersion));
     REQUIRE_FALSE(IsLoadPlanRuntimeCompatible(2, 18, DualScreenRuntimeVersion));
     REQUIRE_FALSE(IsLoadPlanRuntimeCompatible(2, 0, DualScreenRuntimeVersion));
-    REQUIRE_FALSE(IsLoadPlanRuntimeCompatible(2, 20, DualScreenRuntimeVersion));
+    REQUIRE_FALSE(IsLoadPlanRuntimeCompatible(2, DualScreenRuntimeVersion + 1, DualScreenRuntimeVersion));
     REQUIRE(IsLoadPlanRuntimeCompatible(1, 18, 18));
     REQUIRE(IsLoadPlanRuntimeCompatible(1, 0, DualScreenRuntimeVersion));
     REQUIRE_FALSE(IsLoadPlanRuntimeCompatible(3, 19, DualScreenRuntimeVersion));
