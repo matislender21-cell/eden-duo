@@ -1284,6 +1284,9 @@ void ModRuntime::PublishFlags(StateSnapshot& snapshot) {
     for (const auto& [name, value] : flags) {
         snapshot.ints[flag_keys(name)] = value;
     }
+    // The running game's build ID (upper-case hex), so a page can show which build is running:
+    // a native module's package must list it in module.build_ids before the module will load.
+    snapshot.texts["@build_id"] = manifest.running_build_id;
 }
 
 void ModRuntime::PublishMapState(StateSnapshot& snapshot, bool with_flags) {
