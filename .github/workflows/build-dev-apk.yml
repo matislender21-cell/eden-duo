@@ -34,6 +34,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Host tools the CMake configure needs (shader compiler for video_core host shaders).
+      - name: Install host build tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q glslang-tools patch
+          glslangValidator --version | head -1
+
       # GitHub's Ubuntu runners ship the Android SDK; use its own sdkmanager.
       - name: Install NDK, CMake and platform
         run: |
