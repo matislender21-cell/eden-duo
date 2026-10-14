@@ -472,7 +472,7 @@ struct Module {
     bool HasPour() const {
         for (int c : counts)
             if (c > 0) return true;
-        return game_ok && bottled > 0; // A Fedora in the shaker
+        return game_ok && (bottled > 0 || fedora_flag == 1); // A Fedora in the shaker (+0x860, cleared by Reset)
     }
     // Only a bottled item in the shaker (A Fedora): mixed, it is that drink.
     bool OnlyBottled() const {

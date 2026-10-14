@@ -471,9 +471,18 @@ int main() {
         Put(x + 0x990, 0); Put(x + 0x9F0, 0); Put(x + 0x9C0, 0); Put(x + 0x880, 0); Put(x + 0x800, 0); Put(x + 0x860, 0);
         for (int i = 0; i < 70; ++i) tick();
         const bool empty = ints["va_result"] == 0 && ints["va_grab"] == 0;
-        Put(x + 0x990, 1); Put(x + 0x860, 1); // A Fedora goes in
+        Put(x + 0x860, 1); // A Fedora goes in (the game's total leaves it out)
         for (int i = 0; i < 3; ++i) tick();
         const bool grab = ints["va_game_ok"] == 1 && ints["va_grab"] == 1;
+        const bool btn = ext->on_action(ifd, "mix_btn", 0); // bottom Mix starts it...
+        for (int i = 0; i < 30; ++i) tick();
+        ext->on_action(ifd, "mix_btn", 0); // ...and stops it
+        for (int i = 0; i < 3; ++i) tick();
+        const bool btn_ok = btn && ints["va_result"] == 1 && texts["va_drink_name"] == "A Fedora";
+        std::printf("A Fedora with the bottom Mix button: %d\n", btn_ok);
+        failures += !btn_ok;
+        ext->on_action(ifd, "reset", 0);
+        for (int i = 0; i < 3; ++i) tick();
         for (int i = 0; i < 60; ++i) tick();
         game_mix(1); // ZR in the game
         for (int i = 0; i < 90; ++i) tick();
@@ -482,7 +491,7 @@ int main() {
         const bool fedora = ints["va_result"] == 1 && ints["va_ok"] == 1 && texts["va_drink_name"] == "A Fedora" &&
                             texts["va_drink_src"] == "module:gm:~fedora:0:4";
         for (int i = 0; i < 80; ++i) tick();
-        Put(x + 0x990, 0); Put(x + 0x800, 0); // Reset in the game
+        Put(x + 0x860, 0); Put(x + 0x800, 0); // Reset in the game
         for (int i = 0; i < 3; ++i) tick();
         const bool cleared = ints["va_result"] == 0;
         std::printf("A Fedora: empty bar nothing %d, shaker grabbable %d, mixed = success %d, Reset clears it %d\n", empty,
