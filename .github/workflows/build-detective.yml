@@ -36,6 +36,9 @@ jobs:
           cmake -S vallhalla/probe -B build-host-pr -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build-host-pr
           ./build-host-pr/probe_test
+          cmake -S vallhalla/bardetective -B build-host-bd -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-host-bd
+          ./build-host-bd/bardetective_test
       - name: Build for Android arm64
         run: |
           NDK="$ANDROID_HOME/ndk/28.2.13676358"
@@ -57,6 +60,12 @@ jobs:
           cmake --build build-android-pr
           "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D --defined-only build-android-pr/010086500D3C8000.so
           "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" build-android-pr/010086500D3C8000.so
+          cmake -S vallhalla/bardetective -B build-android-bd -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-24 -DANDROID_STL=c++_static
+          cmake --build build-android-bd
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm" -D --defined-only build-android-bd/010086500D3C8000.so
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" build-android-bd/010086500D3C8000.so
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,3 +82,7 @@ jobs:
           gh release create probe-module build-android-pr/010086500D3C8000.so --prerelease \
             --target "${{ github.sha }}" --title "VAllhalla probe module (arm64)" \
             --notes "Research tool: reads the player's own game data file and shows its sprites. Built from ${{ github.sha }}."
+          gh release delete bardetective-module --yes --cleanup-tag || true
+          gh release create bardetective-module build-android-bd/010086500D3C8000.so --prerelease \
+            --target "${{ github.sha }}" --title "VAllhalla bar detective module (arm64)" \
+            --notes "Research tool: finds where the game keeps the shaker's contents. Built from ${{ github.sha }}."
