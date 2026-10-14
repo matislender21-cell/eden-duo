@@ -24,6 +24,10 @@
 // S+0x8000 is sampled under that label. Flags = slots steady within each label with a different
 // value per label (the same each time); timers = slots that move while mixing and stay put
 // while not mixing.
+//
+// 0.0.4: change finder. BEFORE takes a baseline of every double from S-0x8000 to S+0x10000 (and
+// marks the ones that move by themselves over 1 s); do one thing in the game; AFTER lists the
+// slots that changed, with their old and new values (bottled items, the drink result...).
 
 #include <algorithm>
 #include <cmath>
@@ -309,6 +313,20 @@ struct BarDetective {
             ++mix_periods[arg];
             return true;
         }
+        if (a == "before") {
+            if (!seed) FindSeed();
+            if (!seed) return false;
+            ch_state = 1;
+            ch_tap = ticks;
+            ch_found.clear();
+            return true;
+        }
+        if (a == "after") {
+            if (ch_state < 2) return false;
+            ch_state = 3;
+            ch_tap = ticks;
+            return true;
+        }
         if (a == "mix_clear") {
             mix.clear();
             mix_found.clear();
@@ -354,12 +372,76 @@ struct BarDetective {
         case 0x960: return " Adelhyde";
         case 0x9C0: return " Aging";
         case 0x9F0: return " Ice";
+        case 0x8D0: return " Flanergide";
+        case 0x8A0: return " Karmotrine";
+        case 0x990: return " total";
+        case 0x880: return " mixing";
+        case 0x800: return " not mixing";
         default: return "";
+        }
+    }
+
+    // change finder
+    static constexpr s64 kChFrom = -0x8000, kChTo = 0x10000;
+    static constexpr size_t kChN = size_t((kChTo - kChFrom) / 8);
+    std::vector<double> ch_before;
+    std::vector<u8> ch_noisy;
+    u64 ch_tap = 0;
+    int ch_state = 0; // 0 idle, 1 taking the baseline, 2 baseline ready, 3 after
+    std::vector<std::pair<s64, double>> ch_found; // offset, value before
+
+    double SlotAt(s64 off, bool& ok) const {
+        double d = 0;
+        ok = seed && ReadF64(u64(s64(seed) + off), d) && std::isfinite(d);
+        return d;
+    }
+    void ChangeTick() {
+        if (ch_state == 1) {
+            if (ch_before.size() != kChN) {
+                ch_before.assign(kChN, 0);
+                ch_noisy.assign(kChN, 0);
+            }
+            const bool first = ticks == ch_tap + 1;
+            for (size_t i = 0; i < kChN; ++i) {
+                bool ok;
+                const double d = SlotAt(kChFrom + s64(i) * 8, ok);
+                if (!ok) {
+                    ch_noisy[i] = 1;
+                    continue;
+                }
+                if (first) {
+                    ch_before[i] = d;
+                    ch_noisy[i] = 0;
+                } else if (d != ch_before[i]) {
+                    ch_noisy[i] = 1;
+                }
+            }
+            if (ticks >= ch_tap + 60) ch_state = 2;
+        } else if (ch_state == 3 && ticks == ch_tap + 30) {
+            ch_found.clear();
+            for (size_t i = 0; i < kChN; ++i) {
+                if (ch_noisy[i]) continue;
+                bool ok;
+                const double d = SlotAt(kChFrom + s64(i) * 8, ok);
+                if (ok && d != ch_before[i]) ch_found.push_back({kChFrom + s64(i) * 8, ch_before[i]});
+            }
+            std::stable_sort(ch_found.begin(), ch_found.end(), [](const auto& a, const auto& b) {
+                return (a.first < 0 ? -a.first : a.first) < (b.first < 0 ? -b.first : b.first);
+            });
+            if (host.log)
+                for (const auto& [off, was] : ch_found) {
+                    char b[120];
+                    bool ok;
+                    std::snprintf(b, sizeof b, "VAllhalla bar detective: changed S%c0x%llX %g -> %g", off < 0 ? '-' : '+',
+                                  (unsigned long long)(off < 0 ? -off : off), was, SlotAt(off, ok));
+                    host.log(host.userdata, 1, b);
+                }
         }
     }
 
     void Tick() {
         ++ticks;
+        ChangeTick();
         if (!seed) FindSeed();
         MixSample();
         if (job == Job::Build) StepBuild();
@@ -369,6 +451,32 @@ struct BarDetective {
     void Sample(const EdenDsmodHostApi* h) const {
         auto pt = [&](const char* n, const std::string& v) { h->publish_text(h->userdata, n, v.c_str()); };
         auto pi = [&](const char* n, s64 v) { h->publish_i64(h->userdata, n, v); };
+        {
+            const char* st = !seed ? "switch not found (be at the bar)"
+                             : ch_state == 0 ? "tap BEFORE"
+                             : ch_state == 1 ? "taking the baseline... keep still"
+                             : ch_state == 2 ? "baseline ready: do ONE thing in the game, then tap AFTER"
+                             : ticks < ch_tap + 30 ? "checking..." : "done: these changed";
+            char b[200];
+            std::snprintf(b, sizeof b, "%s   (%zu changed)", st, ch_found.size());
+            pt("bd.cstatus", b);
+            for (size_t k = 0; k < 16; ++k) {
+                char n[16];
+                std::snprintf(n, sizeof n, "bd.c%zu", k);
+                if (k >= ch_found.size()) {
+                    pt(n, "");
+                    continue;
+                }
+                const auto [off, was] = ch_found[k];
+                bool ok;
+                const double now = SlotAt(off, ok);
+                char v[160];
+                std::snprintf(v, sizeof v, "S%c0x%llX   %g  ->  %g%s", off < 0 ? '-' : '+',
+                              (unsigned long long)(off < 0 ? -off : off), was, ok ? now : -1.0,
+                              off >= 0 ? Known(u64(off)) : "");
+                pt(n, v);
+            }
+        }
         {
             char b[200];
             const bool rec = mix_label >= 0 && ticks <= mix_tap + 180;

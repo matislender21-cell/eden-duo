@@ -126,6 +126,17 @@ int main() {
         failures += texts["bd.m0"].find("S+0x1230  FLAG  not mixing 0 / mixing 1") != 0 ||
                     texts["bd.m1"].find("S-0x1240  TIMER") != 0;
     }
+    {   // change finder: a Fedora slot goes 0 -> 1; a noisy slot is ignored
+        Put(seed + 0xA50, 0);
+        failures += !ext->on_action(inst, "before", 0);
+        for (int i = 0; i < 70; ++i) { Put(seed + 0x3000, double(i % 3)); mod->tick(inst, &host); }
+        Put(seed + 0xA50, 1);
+        Put(seed + 0x3000, 2);
+        failures += !ext->on_action(inst, "after", 0);
+        for (int i = 0; i < 40; ++i) mod->tick(inst, &host);
+        std::printf("change finder: %s | %s\n", texts["bd.cstatus"].c_str(), texts["bd.c0"].c_str());
+        failures += texts["bd.c0"].find("S+0xA50   0  ->  1") != 0 || texts["bd.cstatus"].find("(1 changed)") == std::string::npos;
+    }
     std::printf("log lines: %zu\n", logs.size());
     failures += logs.size() < 7;
     mod->destroy(inst);
