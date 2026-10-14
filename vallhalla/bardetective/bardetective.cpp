@@ -13,6 +13,11 @@
 // SNAPs drop the guesses whose value does not match. What survives is listed per item with its
 // live value and its offset from the talking/mixing switch the companion already finds (and from
 // the heap start), so the release can read it the same way.
+//
+// 0.0.2: the first run (14 Oct) found Delta S+0x900, Bronson S+0x930, Adelhyde S+0x960,
+// Aging S+0x9C0, Ice S+0x9F0 (S = the switch): 0x30 apart. A watch grid now shows the live value
+// of every 0x30 slot from S+0x780 to S+0xC00, so Flanergide and Karmotrine can be spotted by
+// pouring them.
 
 #include <algorithm>
 #include <cmath>
@@ -260,7 +265,21 @@ struct BarDetective {
         return false;
     }
 
+    static constexpr u64 kWatchFrom = 0x780, kWatchStep = 0x30;
+    static constexpr int kWatchN = 26;
+    static const char* Known(u64 off) {
+        switch (off) {
+        case 0x900: return " Delta";
+        case 0x930: return " Bronson";
+        case 0x960: return " Adelhyde";
+        case 0x9C0: return " Aging";
+        case 0x9F0: return " Ice";
+        default: return "";
+        }
+    }
+
     void Tick() {
+        if (!seed) FindSeed();
         if (job == Job::Build) StepBuild();
         else if (job == Job::Filter) StepFilter();
     }
@@ -280,6 +299,18 @@ struct BarDetective {
             std::snprintf(b, sizeof b, "snaps done: %d of %d, %zu guesses, switch %s", step, kSteps, addr.size(),
                           seed ? "found" : "not found yet");
         pt("bd.progress", b);
+        for (int k = 0; k < kWatchN; ++k) {
+            const u64 off = kWatchFrom + u64(k) * kWatchStep;
+            double d = 0;
+            char v[96];
+            if (seed && ReadF64(seed + off, d) && std::isfinite(d))
+                std::snprintf(v, sizeof v, "S+0x%llX = %g%s", (unsigned long long)off, d, Known(off));
+            else
+                std::snprintf(v, sizeof v, "S+0x%llX = ?", (unsigned long long)off);
+            char n[16];
+            std::snprintf(n, sizeof n, "bd.w%d", k);
+            pt(n, v);
+        }
         for (int i = 0; i < kItems; ++i) {
             std::string line = std::string(kItemName[i]) + ": ";
             if (step == 0) {

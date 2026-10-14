@@ -101,6 +101,8 @@ int main() {
         failures += first == std::string::npos || t.compare(first + 3, std::strlen(want[i]), want[i]) != 0;
     }
     failures += texts["bd.status"].find("Done") == std::string::npos;
+    std::printf("watch: %s | %s\n", texts["bd.w0"].c_str(), texts["bd.w12"].c_str());
+    failures += texts["bd.w0"] != "S+0x780 = 0" || texts["bd.w12"].find("S+0x9C0 = ") != 0;
     failures += ext->on_action(inst, "snap", 0); // no fifth step
     ext->on_action(inst, "restart", 0);
     mod->tick(inst, &host);
