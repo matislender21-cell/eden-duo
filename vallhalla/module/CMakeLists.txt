@@ -8,7 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(EDEN_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../src" CACHE PATH "Eden Duo src directory")
 
 add_library(vallhalla SHARED vallhalla.cpp)
-target_include_directories(vallhalla PRIVATE "${EDEN_SRC}")
+target_include_directories(vallhalla PRIVATE "${EDEN_SRC}" "${EDEN_SRC}/../externals/stb")
 set_target_properties(vallhalla PROPERTIES PREFIX "" OUTPUT_NAME "010086500D3C8000"
                       CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vallhalla.exports"
@@ -22,5 +22,5 @@ if(ANDROID)
     target_link_options(vallhalla PRIVATE "-Wl,--exclude-libs,ALL")
 else()
     add_executable(vallhalla_test test_vallhalla.cpp vallhalla.cpp)
-    target_include_directories(vallhalla_test PRIVATE "${EDEN_SRC}")
+    target_include_directories(vallhalla_test PRIVATE "${EDEN_SRC}" "${EDEN_SRC}/../externals/stb")
 endif()

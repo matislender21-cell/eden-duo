@@ -20,6 +20,11 @@
 //   va_started  1 while a shake-started mix is running in the game
 //   va_wiggle   0..11 frame of the artist's shaker loop while mixing (violent once blended)
 //   va_jx/va_jy jitter offsets in px for the shaker while the shake is violent (blended)
+//   va_angle    shaker tilt in degrees (+ = clockwise) and va_sway its sideways sway in the
+//               artist's GIF pixels: her swing (0 6 20 44 20 6 0 -13 -27 -45 -27 -13, 140 ms
+//               a step) while mixing, a hard +-45 rattle once blended, 0 otherwise
+// Images: "module:gm:<sprite name>[:<frame>[:<scale>]]" -> that sprite from the player's own
+// game data (never shipped), scaled by an integer factor with nearest neighbour.
 //   va_success_frame  0..26 frame of the artist's Success popup while va_done
 //   va_fill     0..100: while shaking, time towards the blend point (5 s); full once let go
 //   va_blended  1 when the drink is (or will be) blended; va_done 1 mixed / 2 blended after
@@ -40,12 +45,21 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <mutex>
 #include <string>
 #include <vector>
+
 
 #include "core/mods/dsmod_module_abi.h"
 #include "core/mods/dsmod_module_extensions.h"
 #include "core/mods/modules/dsmod_module_sdk.h"
+#include "../common/gm_reader.h"
+
+// stb_image's implementation, once (gm_reader.h only needs its declarations)
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#include "stb_image.h"
 
 using namespace dsmod_sdk::int_types;
 
@@ -291,6 +305,28 @@ struct Module {
     // The artist's shaker loop (12 frames, 140 ms each) plays while the drink mixes. Once it is
     // blended the shake turns violent: only the hard-tilt poses (1 3 1 0 7 9 7 0), 35 ms each, plus
     // a jitter of a few pixels (va_jx / va_jy). Frame 0 (upright) when not mixing.
+    // The artist's swing, measured from her GIF: tilt (degrees) and sideways sway (GIF px).
+    static constexpr int kSwingAngle[12] = {0, 6, 20, 44, 20, 6, 0, -13, -27, -45, -27, -13};
+    static constexpr int kSwingSway[12] = {0, 26, 44, 52, 44, 26, 0, -10, -31, -46, -31, -10};
+
+    int SwingStep() const {
+        if (!started) return -1;
+        const u64 ms = mix_ticks * 1000 / 60;
+        if (Violent()) {
+            static constexpr int kSeq[8] = {1, 3, 1, 0, 7, 9, 7, 0};
+            return kSeq[(ms / 35) % 8];
+        }
+        return int((ms / 140) % 12);
+    }
+    int Angle() const {
+        const int k = SwingStep();
+        return k < 0 ? 0 : kSwingAngle[k];
+    }
+    int Sway() const {
+        const int k = SwingStep();
+        return k < 0 ? 0 : kSwingSway[k];
+    }
+
     bool Violent() const {
         return started && mix_ticks >= kBlendTicks;
     }
@@ -356,6 +392,35 @@ struct Module {
         }
     }
 
+    // ---- game art (asset worker) ----
+    std::mutex gm_mutex;
+    vallhalla::GmReader gm;
+
+    bool LoadImage(const EdenDsmodHostApi* h, const char* key, void* receiver, EdenDsmodImageSink sink) {
+        std::string k = key;
+        if (k.rfind("module:", 0) == 0) k = k.substr(7);
+        if (k.rfind("gm:", 0) != 0) return false;
+        k = k.substr(3);
+        // gm:<name>[:<frame>[:<scale>]]
+        std::vector<std::string> parts;
+        size_t at = 0;
+        for (;;) {
+            const size_t c = k.find(':', at);
+            parts.push_back(k.substr(at, c == std::string::npos ? std::string::npos : c - at));
+            if (c == std::string::npos) break;
+            at = c + 1;
+        }
+        const size_t frame = parts.size() > 1 ? size_t(std::strtoul(parts[1].c_str(), nullptr, 10)) : 0;
+        const int scale = parts.size() > 2 ? int(std::strtol(parts[2].c_str(), nullptr, 10)) : 1;
+        std::scoped_lock lock{gm_mutex};
+        if (!gm.Open(h ? *h : host)) return false;
+        int w = 0, ht = 0;
+        std::vector<u8> px;
+        if (!gm.Frame(parts[0], frame, scale, w, ht, px)) return false;
+        sink(receiver, u32(w), u32(ht), px.data(), px.size());
+        return true;
+    }
+
     bool OnAction(const std::string& a, s64 arg = 0) {
         if (a == "skip") {
             if (mode < 0) manual = false;
@@ -406,6 +471,8 @@ struct Module {
         h->publish_i64(h->userdata, "va_wiggle", Wiggle());
         h->publish_i64(h->userdata, "va_jx", Jitter(0, 7));
         h->publish_i64(h->userdata, "va_jy", Jitter(1, 4));
+        h->publish_i64(h->userdata, "va_angle", Angle());
+        h->publish_i64(h->userdata, "va_sway", Sway());
         // While shaking the bar counts towards blending (full at 5 s); once let go the drink is
         // done, so the bar is full: blue for mixed, light for blended.
         h->publish_i64(h->userdata, "va_fill",
@@ -469,6 +536,16 @@ void TickFn(void* inst, const EdenDsmodHostApi* host) {
 
 void Configure(void*, const EdenDsmodHostExtensions*) {}
 
+EdenDsmodBool LoadImageFn(void* inst, const EdenDsmodHostApi* host, const char* key, void* receiver,
+                          EdenDsmodImageSink sink) {
+    try {
+        return static_cast<Module*>(inst)->LoadImage(host, key ? key : "", receiver, sink) ? EDEN_DSMOD_TRUE
+                                                                                         : EDEN_DSMOD_FALSE;
+    } catch (...) {
+        return EDEN_DSMOD_FALSE;
+    }
+}
+
 EdenDsmodBool OnAction(void* inst, const char* action, int64_t argument) {
     try {
         return static_cast<Module*>(inst)->OnAction(action ? action : "", argument) ? EDEN_DSMOD_TRUE
@@ -485,7 +562,7 @@ const EdenDsmodModuleApi kModule = {
     EDEN_DSMOD_MODULE_ABI_HASH,
     kTitleId,
     "VAllhalla",
-    EDEN_DSMOD_CAP_EXTENSIONS,
+    EDEN_DSMOD_CAP_EXTENSIONS | EDEN_DSMOD_CAP_ROMFS_READ,
     SupportsBuild,
     Create,
     Destroy,
@@ -494,7 +571,7 @@ const EdenDsmodModuleApi kModule = {
 };
 
 const EdenDsmodModuleExtensions kExtensions = {
-    EDEN_DSMOD_EXT_VERSION, sizeof(EdenDsmodModuleExtensions), EDEN_DSMOD_EXT_HASH, Configure, OnAction, nullptr,
+    EDEN_DSMOD_EXT_VERSION, sizeof(EdenDsmodModuleExtensions), EDEN_DSMOD_EXT_HASH, Configure, OnAction, LoadImageFn,
 };
 
 } // namespace

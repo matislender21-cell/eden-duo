@@ -10,6 +10,10 @@
 #include "core/mods/dsmod_module_abi.h"
 #include "core/mods/dsmod_module_extensions.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+#include "../common/test_gmfile.h"
+
 extern "C" const EdenDsmodModuleApi* eden_dsmod_get_module(uint32_t, uint64_t);
 extern "C" const EdenDsmodModuleExtensions* eden_dsmod_get_extensions(uint32_t, uint64_t);
 
@@ -31,6 +35,15 @@ uint64_t HeapBeginLow(void*) { return kHeap - 0x97000000ull; }
 uint64_t HeapEnd(void*) { return kHeap + kHeapSize; }
 void PubI(void*, const char* n, int64_t v) { ints[n] = v; }
 void PubT(void*, const char*, const char*) {}
+std::vector<uint8_t> gmfile;
+size_t ReadRomfs(void*, const char* path, uint64_t off, void* out, size_t n) {
+    if (std::string(path) != "game.unx") return 0;
+    if (!out) return gmfile.size();
+    if (off >= gmfile.size()) return 0;
+    n = std::min<size_t>(n, gmfile.size() - off);
+    std::memcpy(out, gmfile.data() + off, n);
+    return n;
+}
 void Put(uint64_t a, double v) { std::memcpy(&heap[a - kHeap], &v, 8); }
 void Triple(uint64_t x, double a, double b, double c) { Put(x, a); Put(x + 0x150, b); Put(x + 0x340, c); }
 } // namespace
@@ -178,7 +191,10 @@ int main() {
     {
         int seen = 0;
         for (int i = 0; i < 60; ++i) { frame(at(700, 650)); seen |= 1 << ints["va_wiggle"]; }
-        std::printf("shaker loop while mixing: frames seen 0x%x\n", seen);
+        std::printf("shaker loop while mixing: frames seen 0x%x, angle now %lld sway %lld\n", seen,
+                    (long long)ints["va_angle"], (long long)ints["va_sway"]);
+        failures += ints["va_angle"] != 0 && ints["va_angle"] != 6 && ints["va_angle"] != 44 && ints["va_angle"] != -45 &&
+                    ints["va_angle"] != -13;
         failures += seen == 1;
     }
     std::printf("~6.3 s in: fill %lld blended %lld\n", (long long)ints["va_fill"], (long long)ints["va_blended"]);
@@ -250,6 +266,34 @@ int main() {
         std::printf("seed spot: talking at boot %s, mixing right away %s\n", a ? "ok" : "FAIL", b ? "ok" : "FAIL");
         failures += !a || !b;
         mod->destroy(i2);
+    }
+    // ---- game art from the player's own data file ----
+    {
+        gmfile = vallhalla_test::BuildFakeGm();
+        EdenDsmodHostApi h3 = host;
+        h3.read_romfs = ReadRomfs;
+        void* i3 = mod->create(&h3, "{}");
+        struct Got { uint32_t w = 0, h = 0; std::vector<uint8_t> px; } got;
+        auto sink = [](void* r, uint32_t ww, uint32_t hh, const uint8_t* p, size_t n) {
+            auto* g = static_cast<Got*>(r); g->w = ww; g->h = hh; g->px.assign(p, p + n);
+        };
+        bool all = true;
+        for (const char* key : {"module:gm:spr_shaker:0:3", "module:gm:SPR SHAKER:0:3", "module:gm:sprshaker:0:3"}) {
+            got = {};
+            const bool ok = ext->load_image(i3, &h3, key, &got, sink);
+            // x3: 48x96; texture 0 pixel (0,0) has red 1 -> output pixels (0..2, 0..2)
+            const bool good = ok && got.w == 48 && got.h == 96 && got.px[0] == 1 && got.px[(2 * 48 + 2) * 4] == 1 &&
+                              got.px[(3 * 48 + 3) * 4] == 200;
+            std::printf("game sprite %-28s -> %ux%u %s\n", key, got.w, got.h, good ? "ok" : "FAIL");
+            all = all && good;
+        }
+        got = {};
+        const bool f1 = ext->load_image(i3, &h3, "module:gm:spr_shaker:1:1", &got, sink) && got.w == 16 && got.px[0] == 200;
+        const bool bg = ext->load_image(i3, &h3, "module:gm:bg_doodle", &got, sink) && got.w == 64 && got.h == 48;
+        const bool miss = !ext->load_image(i3, &h3, "module:gm:no_such_sprite", &got, sink);
+        std::printf("frame 1 %s, background %s, unknown name refused %s\n", f1 ? "ok" : "FAIL", bg ? "ok" : "FAIL", miss ? "ok" : "FAIL");
+        failures += !all || !f1 || !bg || !miss;
+        mod->destroy(i3);
     }
     std::printf("%s\n", failures ? "VALLHALLA FAIL" : "VALLHALLA OK");
     return failures ? 1 : 0;
