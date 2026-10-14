@@ -28,6 +28,8 @@
 // 0.0.4: change finder. BEFORE takes a baseline of every double from S-0x8000 to S+0x10000 (and
 // marks the ones that move by themselves over 1 s); do one thing in the game; AFTER lists the
 // slots that changed, with their old and new values (bottled items, the drink result...).
+// 0.0.5: only real numbers count (0, or between 1e-6 and 1e9 in size): the 8-byte slots
+// that hold pointers or flags read as tiny garbage doubles and are skipped. 28 shown.
 
 #include <algorithm>
 #include <cmath>
@@ -390,6 +392,10 @@ struct BarDetective {
     int ch_state = 0; // 0 idle, 1 taking the baseline, 2 baseline ready, 3 after
     std::vector<std::pair<s64, double>> ch_found; // offset, value before
 
+    static bool Nice(double d) {
+        const double a = std::fabs(d);
+        return d == 0 || (a >= 1e-6 && a <= 1e9);
+    }
     double SlotAt(s64 off, bool& ok) const {
         double d = 0;
         ok = seed && ReadF64(u64(s64(seed) + off), d) && std::isfinite(d);
@@ -423,7 +429,8 @@ struct BarDetective {
                 if (ch_noisy[i]) continue;
                 bool ok;
                 const double d = SlotAt(kChFrom + s64(i) * 8, ok);
-                if (ok && d != ch_before[i]) ch_found.push_back({kChFrom + s64(i) * 8, ch_before[i]});
+                if (ok && d != ch_before[i] && Nice(d) && Nice(ch_before[i]))
+                    ch_found.push_back({kChFrom + s64(i) * 8, ch_before[i]});
             }
             std::stable_sort(ch_found.begin(), ch_found.end(), [](const auto& a, const auto& b) {
                 return (a.first < 0 ? -a.first : a.first) < (b.first < 0 ? -b.first : b.first);
@@ -460,7 +467,7 @@ struct BarDetective {
             char b[200];
             std::snprintf(b, sizeof b, "%s   (%zu changed)", st, ch_found.size());
             pt("bd.cstatus", b);
-            for (size_t k = 0; k < 16; ++k) {
+            for (size_t k = 0; k < 28; ++k) {
                 char n[16];
                 std::snprintf(n, sizeof n, "bd.c%zu", k);
                 if (k >= ch_found.size()) {

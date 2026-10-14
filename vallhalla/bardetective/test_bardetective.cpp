@@ -128,10 +128,12 @@ int main() {
     }
     {   // change finder: a Fedora slot goes 0 -> 1; a noisy slot is ignored
         Put(seed + 0xA50, 0);
+        { const uint64_t junk = 0x0000003A00000020ull; std::memcpy(Host(seed + 0xA58, 8), &junk, 8); }
         failures += !ext->on_action(inst, "before", 0);
         for (int i = 0; i < 70; ++i) { Put(seed + 0x3000, double(i % 3)); mod->tick(inst, &host); }
         Put(seed + 0xA50, 1);
         Put(seed + 0x3000, 2);
+        { const uint64_t junk = 0x0000003A00000010ull; std::memcpy(Host(seed + 0xA58, 8), &junk, 8); } // a pointer-ish change
         failures += !ext->on_action(inst, "after", 0);
         for (int i = 0; i < 40; ++i) mod->tick(inst, &host);
         std::printf("change finder: %s | %s\n", texts["bd.cstatus"].c_str(), texts["bd.c0"].c_str());
