@@ -23,7 +23,7 @@
 //   va_angle    shaker tilt in degrees (+ = clockwise) and va_sway its sideways sway in the
 //               artist's GIF pixels: her swing (0 6 20 44 20 6 0 -13 -27 -45 -27 -13, 140 ms
 //               a step) while mixing, a hard +-45 rattle once blended, 0 otherwise
-// Images: "module:gm:<sprite name>[:<frame>[:<scale>[:swaprg]]]" -> that sprite from the player's
+// Images: "module:gm:<sprite name>[:<frame>[:<scale>[:swaprg][:pad<X>x<Y>]]]" -> that sprite from the player's
 // own game data (never shipped), scaled by an integer factor with nearest neighbour; "swaprg"
 // swaps its red and green channels (the green Serve button made from the game's Mix button).
 //   va_success_frame  0..26 frame of the artist's Success popup while va_done
@@ -537,9 +537,28 @@ struct Module {
             picked[parts[0]] = e ? e->name : std::string("(no match)");
         }
         if (!gm.Frame(parts[0], frame, scale, w, ht, px)) return false;
-        // optional 4th part: a recolour made on the device (nothing extra ships)
-        if (parts.size() > 3 && parts[3] == "swaprg") // red <-> green: the pink Mix button turns green
-            for (size_t i = 0; i + 3 < px.size(); i += 4) std::swap(px[i], px[i + 1]);
+        // optional extra parts, made on the device (nothing extra ships):
+        //   swaprg       red <-> green: the pink Mix button turns green
+        //   pad<X>x<Y>   X px of transparent margin left and right, Y px top and bottom (after
+        //                scaling): a bigger touch area around a can without stretching it
+        for (size_t p = 3; p < parts.size(); ++p) {
+            if (parts[p] == "swaprg") {
+                for (size_t i = 0; i + 3 < px.size(); i += 4) std::swap(px[i], px[i + 1]);
+            } else if (parts[p].rfind("pad", 0) == 0) {
+                char* end = nullptr;
+                const long px_x = std::strtol(parts[p].c_str() + 3, &end, 10);
+                const long px_y = (end && *end == 'x') ? std::strtol(end + 1, nullptr, 10) : px_x;
+                const int mx = int(std::clamp(px_x, 0L, 512L)), my = int(std::clamp(px_y, 0L, 512L));
+                const int nw = w + 2 * mx, nh = ht + 2 * my;
+                std::vector<u8> out(size_t(nw) * size_t(nh) * 4, 0);
+                for (int y = 0; y < ht; ++y)
+                    std::memcpy(&out[(size_t(y + my) * size_t(nw) + size_t(mx)) * 4],
+                                &px[size_t(y) * size_t(w) * 4], size_t(w) * 4);
+                px.swap(out);
+                w = nw;
+                ht = nh;
+            }
+        }
         sink(receiver, u32(w), u32(ht), px.data(), px.size());
         return true;
     }

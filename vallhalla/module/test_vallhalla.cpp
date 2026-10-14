@@ -300,6 +300,15 @@ int main() {
                         got.px[1] == 200;
         std::printf("red/green swap: %s\n", sw ? "ok" : "FAIL");
         failures += !sw;
+        got = {};
+        const bool padded = ext->load_image(i3, &h3, "module:gm:spr_shaker:1:1:pad3x2", &got, sink) && got.w == 22 &&
+                            got.h == 36 && got.px[3] == 0 && got.px[(2 * 22 + 3) * 4] == 200 &&
+                            got.px[(2 * 22 + 2) * 4 + 3] == 0 && got.px[((35) * 22 + 21) * 4 + 3] == 0;
+        got = {};
+        const bool padsw = ext->load_image(i3, &h3, "module:gm:spr_shaker:1:1:swaprg:pad4x4", &got, sink) &&
+                           got.w == 24 && got.h == 40 && got.px[(4 * 24 + 4) * 4] == 10;
+        std::printf("bigger touch area (transparent margin): %s, with swap %s\n", padded ? "ok" : "FAIL", padsw ? "ok" : "FAIL");
+        failures += !padded || !padsw;
         std::printf("frame 1 %s, background %s, unknown name refused %s\n", f1 ? "ok" : "FAIL", bg ? "ok" : "FAIL", miss ? "ok" : "FAIL");
         failures += !all || !f1 || !bg || !miss;
         mod->destroy(i3);
