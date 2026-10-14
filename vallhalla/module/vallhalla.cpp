@@ -906,6 +906,21 @@ struct Module {
         std::snprintf(line, sizeof line, "%s  %zu/%zu s%d %lluM%s", st, Proven(), cands.size(), scans,
                       (unsigned long long)((he > hb ? he - hb : 0) >> 20), scanning ? " *" : "");
         h->publish_text(h->userdata, "va_status", line);
+        { // test readout: what the bar reads from the game (raw values next to the switch)
+            auto raw = [&](u64 off) {
+                double d = 0;
+                char b[24];
+                if (!cur_x || !ReadF64(cur_x + off, d)) return std::string("?");
+                std::snprintf(b, sizeof b, "%g", d);
+                return std::string(b);
+            };
+            char dbg[220];
+            std::snprintf(dbg, sizeof dbg, "bar %s A%d B%d D%d F%d K%d tot%s fed%s rdy%s mix%s ice%s age%s pour%d",
+                          game_ok ? "OK" : "--", counts[0], counts[1], counts[2], counts[3], counts[4], raw(kGameTotalOff).c_str(),
+                          raw(kGameFedoraOff).c_str(), raw(kGameIdleOff).c_str(), raw(kGameMixingOff).c_str(),
+                          raw(kGameIceOff).c_str(), raw(kGameAgedOff).c_str(), HasPour() ? 1 : 0);
+            h->publish_text(h->userdata, "va_bar_dbg", dbg);
+        }
     }
 };
 
