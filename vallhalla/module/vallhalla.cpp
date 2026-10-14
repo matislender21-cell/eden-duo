@@ -56,6 +56,11 @@ constexpr int kStrikes = 90;             // ~1.5 s of garbage before a match is 
 constexpr u64 kRescanProven = 3600;      // ~60 s between background scans once sure
 constexpr u64 kRescanUnsure = 600;       // ~10 s while not sure yet
 constexpr u64 kFrameTicks = 15;          // 4 fps at 60 ticks/s
+// Where the switches were in every session so far (heap + offset, base game v0). Checked from
+// the first tick and trusted straight away when it reads the pattern, so the very first drink
+// does not wait for a scan and a flip. If it is ever wrong, the real match wins on its first
+// flip (the most recent flip decides, and a seed that never flips has flipped = 0).
+constexpr u64 kSeedOff = 0x97340230;
 constexpr u64 kEmergencyIdle = 240;      // an emergency opening closes after ~4 s unused
 constexpr u64 kBlendTicks = 300;         // the game blends a drink mixed for 5 s
 constexpr int kReversalTicks = 2;        // a direction change counts after this many moving ticks
@@ -183,7 +188,25 @@ struct Module {
         return n;
     }
 
+    void Seed() {
+        const u64 hb = host.get_heap_begin ? host.get_heap_begin(host.userdata) : 0;
+        const u64 he = host.get_heap_end ? host.get_heap_end(host.userdata) : 0;
+        const u64 x = hb + kSeedOff;
+        if (hb == 0 || x + kS3 + 8 > he) return;
+        auto it = std::lower_bound(cands.begin(), cands.end(), x, [](const Cand& c, u64 v) { return c.x < v; });
+        if (it != cands.end() && it->x == x) {
+            it->seen = 3; // re-found by a scan before the seed check: trust it too
+            return;
+        }
+        const int st = Pattern(x);
+        if (st < 0) return;
+        Add(x, st);
+        it = std::lower_bound(cands.begin(), cands.end(), x, [](const Cand& c, u64 v) { return c.x < v; });
+        if (it != cands.end() && it->x == x) it->seen = 3;
+    }
+
     void Track() {
+        Seed();
         std::vector<u8> drop(cands.size(), 0);
         bool any = false;
         for (size_t i = 0; i < cands.size(); ++i)

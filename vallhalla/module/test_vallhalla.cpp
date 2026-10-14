@@ -25,6 +25,9 @@ const uint8_t* GetReadPointer(void*, uint64_t a, size_t n) {
     return &heap[a - kHeap];
 }
 uint64_t HeapBegin(void*) { return kHeap; }
+// A heap that "starts" 0x97000000 below the fake memory, so the seed spot (+0x97340230) lands
+// inside it at kHeap + 0x340230 (the space below reads as unmapped).
+uint64_t HeapBeginLow(void*) { return kHeap - 0x97000000ull; }
 uint64_t HeapEnd(void*) { return kHeap + kHeapSize; }
 void PubI(void*, const char* n, int64_t v) { ints[n] = v; }
 void PubT(void*, const char*, const char*) {}
@@ -191,6 +194,23 @@ int main() {
     std::printf("served (talking): fill %lld\n", (long long)ints["va_fill"]);
     failures += ints["va_fill"] != 0;
     mod->destroy(inst);
+
+    // ---- seed: the usual spot is trusted from the first tick ----
+    {
+        const uint64_t seed = kHeap + 0x340230;
+        Triple(seed, 1, 0, 0);
+        EdenDsmodHostApi host2 = host;
+        host2.get_heap_begin = HeapBeginLow;
+        void* i2 = mod->create(&host2, "{}");
+        for (int i = 0; i < 3; ++i) { ints.clear(); mod->tick(i2, &host2); }
+        const bool a = ints["va_mode"] == 0 && ints["va_overlay"] == 1;
+        Triple(seed, 0, 1, 1);
+        for (int i = 0; i < 3; ++i) { ints.clear(); mod->tick(i2, &host2); }
+        const bool b = ints["va_mode"] == 1 && ints["va_overlay"] == 0;
+        std::printf("seed spot: talking at boot %s, mixing right away %s\n", a ? "ok" : "FAIL", b ? "ok" : "FAIL");
+        failures += !a || !b;
+        mod->destroy(i2);
+    }
     std::printf("%s\n", failures ? "VALLHALLA FAIL" : "VALLHALLA OK");
     return failures ? 1 : 0;
 }
