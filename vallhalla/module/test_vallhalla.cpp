@@ -182,6 +182,16 @@ int main() {
         failures += seen == 1;
     }
     std::printf("~6.3 s in: fill %lld blended %lld\n", (long long)ints["va_fill"], (long long)ints["va_blended"]);
+    {
+        int seen = 0, moved = 0;
+        for (int i = 0; i < 30; ++i) {
+            frame(at(700, 650));
+            seen |= 1 << ints["va_wiggle"];
+            moved += ints["va_jx"] != 0 || ints["va_jy"] != 0;
+        }
+        std::printf("violent shake: poses 0x%x (want only 0 1 3 7 9), jitter on %d/30 ticks\n", seen, moved);
+        failures += (seen & ~0x28B) != 0 || moved < 15;
+    }
     failures += ints["va_fill"] != 100 || ints["va_blended"] != 1;
     ext->on_action(inst, "shake_end", 0);
     for (int i = 0; i < 30; ++i) frame(-1);

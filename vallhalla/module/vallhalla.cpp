@@ -18,7 +18,8 @@
 //   va_status   short text for the test readout
 //   va_zr_req   1 while the module wants ZR pressed (the package presses it, then acks)
 //   va_started  1 while a shake-started mix is running in the game
-//   va_wiggle   0..11 frame of the artist's shaker loop while mixing (faster once blended)
+//   va_wiggle   0..11 frame of the artist's shaker loop while mixing (violent once blended)
+//   va_jx/va_jy jitter offsets in px for the shaker while the shake is violent (blended)
 //   va_success_frame  0..26 frame of the artist's Success popup while va_done
 //   va_fill     0..100: while shaking, time towards the blend point (5 s); full once let go
 //   va_blended  1 when the drink is (or will be) blended; va_done 1 mixed / 2 blended after
@@ -287,13 +288,31 @@ struct Module {
         }
     }
 
-    // The artist's shaker loop (12 frames, 140 ms each) plays while the drink mixes, twice as
-    // fast once it is blended; frame 0 (upright) otherwise.
+    // The artist's shaker loop (12 frames, 140 ms each) plays while the drink mixes. Once it is
+    // blended the shake turns violent: only the hard-tilt poses (1 3 1 0 7 9 7 0), 35 ms each, plus
+    // a jitter of a few pixels (va_jx / va_jy). Frame 0 (upright) when not mixing.
+    bool Violent() const {
+        return started && mix_ticks >= kBlendTicks;
+    }
+
     int Wiggle() const {
         if (!started) return 0;
         const u64 ms = mix_ticks * 1000 / 60;
-        const u64 period = mix_ticks >= kBlendTicks ? 70 : 140;
-        return int((ms / period) % 12);
+        if (Violent()) {
+            static constexpr int kSeq[8] = {1, 3, 1, 0, 7, 9, 7, 0};
+            return kSeq[(ms / 35) % 8];
+        }
+        return int((ms / 140) % 12);
+    }
+
+    // Small pseudo-random offsets that change every 2 ticks while the shake is violent.
+    int Jitter(int axis, int amp) const {
+        if (!Violent()) return 0;
+        u64 h = (mix_ticks / 2) * 0x9E3779B97F4A7C15ULL + u64(axis) * 0xC2B2AE3D27D4EB4FULL;
+        h ^= h >> 29;
+        h *= 0xBF58476D1CE4E5B9ULL;
+        h ^= h >> 32;
+        return int(h % u64(2 * amp + 1)) - amp;
     }
 
     // The artist's Success popup (27 frames, 30 ms each; the glitch is frames 10-14), looping
@@ -385,6 +404,8 @@ struct Module {
         h->publish_i64(h->userdata, "va_zr_req", zr_pending > 0 && ticks - last_zr >= kZrGap ? 1 : 0);
         h->publish_i64(h->userdata, "va_started", started ? 1 : 0);
         h->publish_i64(h->userdata, "va_wiggle", Wiggle());
+        h->publish_i64(h->userdata, "va_jx", Jitter(0, 7));
+        h->publish_i64(h->userdata, "va_jy", Jitter(1, 4));
         // While shaking the bar counts towards blending (full at 5 s); once let go the drink is
         // done, so the bar is full: blue for mixed, light for blended.
         h->publish_i64(h->userdata, "va_fill",
