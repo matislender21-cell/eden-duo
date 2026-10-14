@@ -18,7 +18,8 @@
 //   va_status   short text for the test readout
 //   va_zr_req   1 while the module wants ZR pressed (the package presses it, then acks)
 //   va_started  1 while a shake-started mix is running in the game
-//   va_wiggle   0..4 shaker frame (0 far left, 2 middle, 4 far right) from the finger's motion
+//   va_wiggle   0..11 frame of the artist's shaker loop while mixing (faster once blended)
+//   va_success_frame  0..26 frame of the artist's Success popup while va_done
 //   va_fill     0..100: while shaking, time towards the blend point (5 s); full once let go
 //   va_blended  1 when the drink is (or will be) blended; va_done 1 mixed / 2 blended after
 //               a shake-mix ended (shows "Success!!") until the drink is served or Reset
@@ -107,6 +108,7 @@ struct Module {
     bool started = false;   // we pressed ZR to start a mix that is still running
     u64 mix_ticks = 0;      // how long the current / last mix has run
     int done = 0;           // last shake-mix finished: 0 no, 1 mixed, 2 blended (Success!!)
+    u64 done_tick = 0;      // when it finished (Success animation)
     int zr_pending = 0;     // ZR presses still to be made
     u64 last_zr = 0;        // tick of our last ZR press
     u64 last_shake = 0;     // tick of the last shake sample on the shaker
@@ -279,16 +281,27 @@ struct Module {
         if (started) { // stop the mix: any mix is a finished drink, 5 s or more is blended
             started = false;
             done = mix_ticks >= kBlendTicks ? 2 : 1;
+            done_tick = ticks;
             ++zr_pending;
             if (mode < 0) manual = true; // like Mix: while unsure, the overlay comes back
         }
     }
 
+    // The artist's shaker loop (12 frames, 140 ms each) plays while the drink mixes, twice as
+    // fast once it is blended; frame 0 (upright) otherwise.
     int Wiggle() const {
-        if (!has_pos) return 2;
-        int f = last_step - 1; // 0..4
-        if (started && mix_ticks >= kBlendTicks && f != 2) f = f < 2 ? 0 : 4; // blended: wilder
-        return f;
+        if (!started) return 0;
+        const u64 ms = mix_ticks * 1000 / 60;
+        const u64 period = mix_ticks >= kBlendTicks ? 70 : 140;
+        return int((ms / period) % 12);
+    }
+
+    // The artist's Success popup (27 frames, 30 ms each; the glitch is frames 10-14), looping
+    // from the glitch while a finished drink waits to be served.
+    int SuccessFrame() const {
+        if (!done) return 0;
+        const u64 ms = (ticks - done_tick) * 1000 / 60;
+        return int((ms / 30 + 10) % 27);
     }
 
     void Tick() {
@@ -378,6 +391,7 @@ struct Module {
                        done ? 100 : s64(std::min<u64>(100, mix_ticks * 100 / kBlendTicks)));
         h->publish_i64(h->userdata, "va_blended", done == 2 || (started && mix_ticks >= kBlendTicks) ? 1 : 0);
         h->publish_i64(h->userdata, "va_done", done);
+        h->publish_i64(h->userdata, "va_success_frame", SuccessFrame());
         const char* st = mode == 1 ? "auto: mixing"
                          : mode == 0 ? (skip ? "auto: talking (opened by hold)" : "auto: talking")
                          : cands.empty() ? "auto: searching"

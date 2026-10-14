@@ -170,18 +170,31 @@ int main() {
     }
     std::printf("after shaking: ZR %d (want 1), started %lld, frames used 0x%x\n", zr,
                 (long long)ints["va_started"], seen_frames);
-    failures += zr != 1 || ints["va_started"] != 1 || (seen_frames & 0x11) == 0;
+    failures += zr != 1 || ints["va_started"] != 1;
     for (int i = 0; i < 160; ++i) frame(at(700, 650));
     std::printf("~3 s in: fill %lld blended %lld\n", (long long)ints["va_fill"], (long long)ints["va_blended"]);
     failures += ints["va_fill"] < 50 || ints["va_fill"] > 70 || ints["va_blended"] != 0;
     for (int i = 0; i < 140; ++i) frame(at(700, 650));
-    std::printf("~5.3 s in: fill %lld blended %lld\n", (long long)ints["va_fill"], (long long)ints["va_blended"]);
+    {
+        int seen = 0;
+        for (int i = 0; i < 60; ++i) { frame(at(700, 650)); seen |= 1 << ints["va_wiggle"]; }
+        std::printf("shaker loop while mixing: frames seen 0x%x\n", seen);
+        failures += seen == 1;
+    }
+    std::printf("~6.3 s in: fill %lld blended %lld\n", (long long)ints["va_fill"], (long long)ints["va_blended"]);
     failures += ints["va_fill"] != 100 || ints["va_blended"] != 1;
     ext->on_action(inst, "shake_end", 0);
     for (int i = 0; i < 30; ++i) frame(-1);
     std::printf("let go after 5 s: ZR %d (want 2), started %lld, fill %lld, done %lld (want 2)\n", zr,
                 (long long)ints["va_started"], (long long)ints["va_fill"], (long long)ints["va_done"]);
     failures += zr != 2 || ints["va_started"] != 0 || ints["va_fill"] != 100 || ints["va_done"] != 2;
+    {
+        int seen = 0;
+        for (int i = 0; i < 60; ++i) { frame(-1); seen |= 1 << ints["va_success_frame"]; }
+        std::printf("success popup frames over 1 s: 0x%x (glitch 10-14 included: %s)\n", seen,
+                    (seen & (0x1F << 10)) ? "yes" : "no");
+        failures += !(seen & (0x1F << 10)) || ints["va_wiggle"] != 0;
+    }
     ext->on_action(inst, "reset", 0);
     frame(-1);
     std::printf("Reset: fill %lld done %lld\n", (long long)ints["va_fill"], (long long)ints["va_done"]);
