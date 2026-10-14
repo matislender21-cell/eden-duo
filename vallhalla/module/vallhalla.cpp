@@ -32,6 +32,7 @@
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <string>
@@ -80,6 +81,7 @@ struct Module {
     size_t region_i = 0, rr = 0;
     u64 cursor = 0, wait = 0, ticks = 0;
     bool scanning = false;
+    int scans = 0;          // finished heap scans (test readout)
 
     s64 mode = -1;        // decided state
     s64 last_mode = -1;
@@ -159,6 +161,7 @@ struct Module {
         }
         if (region_i >= regions.size()) {
             scanning = false;
+            ++scans;
             wait = Proven() ? kRescanProven : kRescanUnsure;
         }
     }
@@ -336,7 +339,13 @@ struct Module {
                          : mode == 0 ? (skip ? "auto: talking (opened by hold)" : "auto: talking")
                          : cands.empty() ? "auto: searching"
                                          : "auto: waiting for first mix";
-        h->publish_text(h->userdata, "va_status", st);
+        // test readout: state, matches (proven), finished scans, heap size scanned
+        const u64 hb = host.get_heap_begin ? host.get_heap_begin(host.userdata) : 0;
+        const u64 he = host.get_heap_end ? host.get_heap_end(host.userdata) : 0;
+        char line[160];
+        std::snprintf(line, sizeof line, "%s  %zu/%zu s%d %lluM%s", st, Proven(), cands.size(), scans,
+                      (unsigned long long)((he > hb ? he - hb : 0) >> 20), scanning ? " *" : "");
+        h->publish_text(h->userdata, "va_status", line);
     }
 };
 
