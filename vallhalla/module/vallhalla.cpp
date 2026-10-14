@@ -25,8 +25,8 @@
 //               next changes. A plain tap does nothing: the bar stays locked while talking.
 //   busy        pinged by the package while the player uses the bar; keeps an emergency
 //               opening alive (it closes after ~4 s without use)
-//   shake       every tick of a drag: argument = shaker finger x*4096 + y + 1, or 0 when the
-//               finger is not on the shaker. Real back-and-forth motion starts the mix (ZR).
+//   shake       every tick the shaker is carried: argument = movement step 1..5 (fast left,
+//               left, still, right, fast right). Real back-and-forth motion starts the mix (ZR).
 //   shake_end   the shaker was let go: stops the mix (ZR again) if a shake started it
 //   zr_done     the package pressed ZR for us
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
@@ -57,7 +57,7 @@ constexpr u64 kRescanUnsure = 600;       // ~10 s while not sure yet
 constexpr u64 kFrameTicks = 15;          // 4 fps at 60 ticks/s
 constexpr u64 kEmergencyIdle = 240;      // an emergency opening closes after ~4 s unused
 constexpr u64 kBlendTicks = 300;         // the game blends a drink mixed for 5 s
-constexpr int kReversalPx = 18;          // a direction change counts after this much travel
+constexpr int kReversalTicks = 2;        // a direction change counts after this many moving ticks
 constexpr u64 kShakeWindow = 50;         // two reversals within ~0.8 s = shaking
 constexpr u64 kZrGap = 14;               // ticks between two of our ZR presses
 
@@ -89,11 +89,11 @@ struct Module {
     u64 unused = 0;         // ticks since the player last touched the bar during an emergency
 
     // manual shake
-    bool has_pos = false;
-    s64 px = 0, py = 0;     // last finger position on the shaker
-    s64 run_x = 0, run_y = 0; // travel in the current direction, per axis (signed)
+    bool has_pos = false;   // the shaker is being carried (samples arriving)
+    int dir = 0;            // last moving direction: -1, +1 (0 = none yet)
+    int run = 0;            // moving ticks in that direction
+    int last_step = 3;      // last movement step (1..5)
     u64 rev_ticks[2] = {0, 0}; // ticks of the last two direction reversals
-    double vxs = 0;         // smoothed horizontal speed, px per tick
     bool started = false;   // we pressed ZR to start a mix that is still running
     u64 mix_ticks = 0;      // how long the current / last mix has run
     int zr_pending = 0;     // ZR presses still to be made
@@ -212,36 +212,29 @@ struct Module {
         rev_ticks[1] = ticks;
     }
 
-    // One axis: a reversal is a change of direction after at least kReversalPx of travel.
-    void Axis(s64 d, s64& run) {
-        if (d == 0) return;
-        if ((d > 0) != (run > 0) && run != 0) {
-            if (run >= kReversalPx || run <= -kReversalPx) Reversal();
+    // One finger sample per tick while the shaker is carried. The package cannot hand the module
+    // a live position (module arguments are constants), so it sends the finger's movement this
+    // tick as a step: 1 fast left/up, 2 left/up, 3 still, 4 right/down, 5 fast right/down
+    // (the larger of the two axes; see the "shk_*" derived values in the manifest).
+    void Shake(s64 step) {
+        if (step < 1 || step > 5) return;
+        if (!has_pos || ticks - last_shake > 20) { // a new grab
+            dir = 0;
             run = 0;
-        }
-        run += d;
-    }
-
-    void Shake(s64 arg) {
-        if (arg <= 0) { // not on the shaker
-            has_pos = false;
-            vxs = 0;
-            return;
-        }
-        last_shake = ticks;
-        const s64 x = (arg - 1) / 4096, y = (arg - 1) % 4096;
-        if (has_pos) {
-            const s64 dx = x - px, dy = y - py;
-            Axis(dx, run_x);
-            Axis(dy, run_y);
-            vxs = vxs * 0.6 + double(dx) * 0.4;
-        } else {
-            run_x = run_y = 0;
             rev_ticks[0] = rev_ticks[1] = 0;
         }
-        px = x;
-        py = y;
+        last_shake = ticks;
         has_pos = true;
+        last_step = int(step);
+        const int sgn = step < 3 ? -1 : step > 3 ? 1 : 0;
+        if (sgn != 0) {
+            if (sgn != dir) {
+                if (dir != 0 && run >= kReversalTicks) Reversal();
+                dir = sgn;
+                run = 0;
+            }
+            ++run;
+        }
         const bool shaking = rev_ticks[0] != 0 && ticks - rev_ticks[0] <= kShakeWindow;
         if (shaking && !started) { // start the mix
             started = true;
@@ -252,7 +245,6 @@ struct Module {
 
     void ShakeEnd() {
         has_pos = false;
-        vxs = 0;
         if (started) { // stop the mix
             started = false;
             ++zr_pending;
@@ -262,9 +254,9 @@ struct Module {
 
     int Wiggle() const {
         if (!has_pos) return 2;
-        const double k = mix_ticks >= kBlendTicks && started ? 3.0 : 6.0; // blended: wilder
-        const int f = int(vxs / k + (vxs >= 0 ? 0.5 : -0.5));
-        return 2 + std::clamp(f, -2, 2);
+        int f = last_step - 1; // 0..4
+        if (started && mix_ticks >= kBlendTicks && f != 2) f = f < 2 ? 0 : 4; // blended: wilder
+        return f;
     }
 
     void Tick() {

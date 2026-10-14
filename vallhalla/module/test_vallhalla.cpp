@@ -146,9 +146,16 @@ int main() {
             ext->on_action(inst, "zr_done", 0);
         }
     };
-    auto at = [](int x, int y) { return int64_t(x) * 4096 + y + 1; };
+    // The package's derived values: the finger's movement this tick as a step 1..5.
+    int last_x = -1;
+    auto at = [&](int x, int) -> int64_t {
+        const int d = last_x < 0 ? 0 : x - last_x;
+        last_x = x;
+        return d < -12 ? 1 : d < -2 ? 2 : d <= 2 ? 3 : d <= 12 ? 4 : 5;
+    };
     for (int i = 0; i < 120; ++i) frame(at(700, 650)); // grab and hold still
     ext->on_action(inst, "shake_end", 0);
+    last_x = -1;
     for (int i = 0; i < 30; ++i) frame(-1);
     std::printf("grab without shaking: ZR presses %d (want 0)\n", zr);
     failures += zr != 0;
