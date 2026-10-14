@@ -631,6 +631,17 @@ struct Module {
         h->publish_i64(h->userdata, "va_ok", result == 1 ? 1 : 0);
         h->publish_i64(h->userdata, "va_fail", result == 2 ? 1 : 0);
         h->publish_i64(h->userdata, "va_err_any", ErrAny() ? 1 : 0);
+        // a failed drink locks the bar except Reset (like the game); once the error windows are
+        // gone, Reset pulses (scale x1000, a 1 s breathing wave of +-7 %)
+        const bool lock = result == 2 && !ErrAny();
+        h->publish_i64(h->userdata, "va_fail_lock", lock ? 1 : 0);
+        s64 scale = 1000;
+        if (lock) {
+            const s64 ph = s64((ticks - err_tick) % 60); // 0..59
+            const s64 tri = ph < 30 ? ph : 60 - ph;      // 0..30..0
+            scale = 1000 + (tri * 70) / 30;
+        }
+        h->publish_i64(h->userdata, "va_reset_scale", scale);
         for (int i = 0; i < kErrN; ++i) {
             char n[16];
             std::snprintf(n, sizeof n, "va_err%d", i);

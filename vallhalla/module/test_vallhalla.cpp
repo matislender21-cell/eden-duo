@@ -382,10 +382,15 @@ int main() {
             std::printf("errors: early %d, all shown %d, blocked %d, one left blocks %d, cleared %d (broken glass still %lld)\n",
                         shown_early, all, blocked, still, ints["va_err_any"] == 0, (long long)ints["va_fail"]);
             ok = ok && all == 4 && blocked && still && ints["va_err_any"] == 0 && ints["va_fail"] == 1;
+            int lo = 9999, hi = 0;
+            for (int i = 0; i < 60; ++i) { tick(); lo = std::min<int>(lo, int(ints["va_reset_scale"])); hi = std::max<int>(hi, int(ints["va_reset_scale"])); }
+            const bool lock_ok = ints["va_fail_lock"] == 1 && lo == 1000 && hi == 1070;
+            std::printf("after the errors: bar locked except Reset %d, Reset pulses %d..%d\n", int(ints["va_fail_lock"]), lo, hi);
+            ok = ok && lock_ok;
         }
         ext->on_action(i4, "reset", 0);
         tick();
-        ok = ok && ints["va_result"] == 0;
+        ok = ok && ints["va_result"] == 0 && ints["va_fail_lock"] == 0 && ints["va_reset_scale"] == 1000;
         std::printf("drinks: %s\n", ok ? "ok" : "FAIL");
         failures += !ok;
         mod->destroy(i4);
