@@ -31,6 +31,8 @@ size_t ReadRomfs(void*, const char* path, uint64_t off, void* out, size_t n) {
 }
 void PubI(void*, const char* n, int64_t v) { ints[n] = v; }
 void PubT(void*, const char* n, const char* v) { texts[n] = v; }
+int log_lines = 0;
+void Log(void*, uint32_t, const char*) { ++log_lines; }
 
 struct W { // little writer with back-patching
     std::vector<uint8_t>& b;
@@ -139,6 +141,7 @@ int main() {
     host.read_romfs = ReadRomfs;
     host.publish_i64 = PubI;
     host.publish_text = PubT;
+    host.log = Log;
     void* inst = mod->create(&host, "{}");
     if (!inst || !ext->load_image) return 1;
     for (int i = 0; i < 10; ++i) mod->tick(inst, &host);
@@ -163,11 +166,21 @@ int main() {
     ok = ext->load_image(inst, &host, texts["pr.src"].c_str(), &got, sink);
     std::printf("background: %s / %s ok=%d %ux%u blue=%u\n", texts["pr.name"].c_str(), texts["pr.info"].c_str(), ok, got.w, got.h, got.px[(8 * 64 + 8) * 4 + 2]);
     failures += !ok || texts["pr.name"] != "bg_doodle" || got.w != 64;
+    ext->on_action(inst, "pick", 0);           // bg_doodle
+    ext->on_action(inst, "step", -2);
+    ext->on_action(inst, "pick", 0);           // spr_shaker
+    texts.clear(); mod->tick(inst, &host);
+    std::printf("picks: %lld | %s | %s | %s\n", (long long)ints["pr.picks"], texts["pr.pick0"].c_str(),
+                texts["pr.pick1"].c_str(), texts["pr.picked"].c_str());
+    failures += ints["pr.picks"] != 2 || texts["pr.pick1"].find("spr_shaker  16x32  x2") == std::string::npos ||
+                texts["pr.picked"] != "PICKED";
     ext->on_action(inst, "mode", 0);
     texts.clear(); mod->tick(inst, &host);
     std::printf("all mode: %s %s\n", texts["pr.mode"].c_str(), texts["pr.pos"].c_str());
     failures += texts["pr.pos"] != "1 / 4";
     mod->destroy(inst);
+    std::printf("log lines: %d\n", log_lines);
+    failures += log_lines < 5;
     std::printf("%s\n", failures ? "PROBE FAIL" : "PROBE OK");
     return failures ? 1 : 0;
 }

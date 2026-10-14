@@ -168,6 +168,7 @@ struct Probe {
     bool matches_only = true;
     std::vector<size_t> matches;
     size_t pos = 0, frame = 0;
+    std::vector<size_t> picked; // entry indexes the player marked as "used in my art"
 
     // image worker state (asset worker thread only, plus the mutex)
     std::mutex tex_mutex;
@@ -368,6 +369,7 @@ struct Probe {
                           d.textures.size(), f.c_str());
             counts = b;
             status = "Ready. Use the buttons to browse.";
+            LogCatalog();
             step = 99;
             return;
         }
@@ -409,12 +411,46 @@ struct Probe {
             if (!e.tpags.empty()) frame = (frame + 1) % e.tpags.size();
             return true;
         }
+        if (a == "pick" && !matches.empty()) {
+            const size_t idx = matches[pos];
+            auto it = std::find(picked.begin(), picked.end(), idx);
+            if (it == picked.end()) picked.push_back(idx);
+            else picked.erase(it);
+            LogPicks();
+            return true;
+        }
+        if (a == "clear_picks") {
+            picked.clear();
+            return true;
+        }
         if (a == "mode") {
             matches_only = !matches_only;
             Rebuild();
             return true;
         }
         return false;
+    }
+
+    std::string Describe(size_t idx) const {
+        const auto& e = d.entries[idx];
+        char b[240];
+        std::snprintf(b, sizeof b, "%s  %ux%u  x%zu%s", e.name.c_str(), e.w, e.h, e.tpags.size(),
+                      e.background ? "  (bg)" : "");
+        return b;
+    }
+
+    void Log(const std::string& line) const {
+        if (host.log) host.log(host.userdata, 1, ("VAllhalla probe: " + line).c_str());
+    }
+
+    void LogPicks() const {
+        Log("picks (" + std::to_string(picked.size()) + "):");
+        for (size_t i : picked) Log("  pick " + Describe(i));
+    }
+
+    void LogCatalog() const {
+        Log("file " + d.path + ", " + d.version + ", " + counts);
+        for (size_t i = 0; i < d.entries.size(); ++i) Log(std::to_string(i) + " " + Describe(i));
     }
 
     void Sample(const EdenDsmodHostApi* h) const {
@@ -428,6 +464,12 @@ struct Probe {
         pt("pr.counts", counts);
         pt("pr.status", status);
         pi("pr.ready", ready ? 1 : 0);
+        pi("pr.picks", s64(picked.size()));
+        for (size_t k = 0; k < 40; ++k) {
+            char n[16];
+            std::snprintf(n, sizeof n, "pr.pick%zu", k);
+            pt(n, k < picked.size() ? std::to_string(k + 1) + ". " + Describe(picked[k]) : "");
+        }
         pt("pr.mode", matches_only ? "showing: likely names" : "showing: everything");
         if (!ready || matches.empty()) {
             pt("pr.src", "");
@@ -440,6 +482,7 @@ struct Probe {
         std::snprintf(b, sizeof b, "%zu / %zu", pos + 1, matches.size());
         pt("pr.pos", b);
         pt("pr.name", e.name);
+        pt("pr.picked", std::find(picked.begin(), picked.end(), idx) != picked.end() ? "PICKED" : "");
         u32 tex = 0xFFFF;
         if (!e.tpags.empty())
             if (const u8* t = TpagAt(e.tpags[frame])) tex = U16(t + 20);
