@@ -16,6 +16,7 @@
 
 extern "C" const EdenDsmodModuleApi* eden_dsmod_get_module(uint32_t, uint64_t);
 extern "C" const EdenDsmodModuleExtensions* eden_dsmod_get_extensions(uint32_t, uint64_t);
+extern "C" const EdenDsmodFontExtensions* eden_dsmod_get_font_extensions(uint32_t, uint64_t);
 
 namespace {
 constexpr uint64_t kHeap = 0x3AABC00000ULL, kHeapSize = 96ull << 20;
@@ -294,6 +295,22 @@ int main() {
         std::printf("frame 1 %s, background %s, unknown name refused %s\n", f1 ? "ok" : "FAIL", bg ? "ok" : "FAIL", miss ? "ok" : "FAIL");
         failures += !all || !f1 || !bg || !miss;
         mod->destroy(i3);
+    }
+    // ---- package font ----
+    {
+        auto* fe = eden_dsmod_get_font_extensions(EDEN_DSMOD_FONT_EXT_VERSION, EDEN_DSMOD_FONT_EXT_HASH);
+        std::vector<uint8_t> b = {'V', 'A', 'F', 'N', 10, 0, 65, 0, 2, 0};
+        const uint16_t g[14] = {16, 32, 5, 9, 0, 9, 6, 22, 32, 5, 9, 0, 9, 6};
+        b.insert(b.end(), (const uint8_t*)g, (const uint8_t*)g + sizeof g);
+        struct R { uint32_t line = 0, first = 0, n = 0; uint16_t adv = 0; } r;
+        auto sink = [](void* p, uint32_t line, uint32_t first, const EdenDsmodFontGlyph* gl, uint32_t n) {
+            auto* rr = static_cast<R*>(p); rr->line = line; rr->first = first; rr->n = n; rr->adv = gl[1].advance;
+        };
+        const bool ok = fe && fe->decode_font(nullptr, b.data(), b.size(), &r, sink) && r.line == 10 && r.first == 65 &&
+                        r.n == 2 && r.adv == 6;
+        const bool bad = fe && !fe->decode_font(nullptr, (const uint8_t*)"junk", 4, &r, sink);
+        std::printf("font metrics: %s, junk refused: %s\n", ok ? "ok" : "FAIL", bad ? "ok" : "FAIL");
+        failures += !ok || !bad;
     }
     std::printf("%s\n", failures ? "VALLHALLA FAIL" : "VALLHALLA OK");
     return failures ? 1 : 0;

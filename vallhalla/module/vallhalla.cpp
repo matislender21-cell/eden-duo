@@ -555,6 +555,36 @@ EdenDsmodBool OnAction(void* inst, const char* action, int64_t argument) {
     }
 }
 
+// The package font (PixelMplus12, M+ FONT LICENSE; see LICENSE-PixelMplus.txt in the package):
+// "VAFN" u16 line_height, u16 first_codepoint, u16 count, then count glyphs of
+// u16 x, y, w, h, s16 bearing_x, bearing_y, u16 advance (little-endian), made by the package
+// build from the TTF. The atlas is the package's pixelmplus12.png.
+EdenDsmodBool DecodeFont(void*, const uint8_t* bytes, size_t size, void* receiver, EdenDsmodFontSink sink) {
+    if (!bytes || size < 10 || std::memcmp(bytes, "VAFN", 4) != 0) return EDEN_DSMOD_FALSE;
+    u16 line, first, count;
+    std::memcpy(&line, bytes + 4, 2);
+    std::memcpy(&first, bytes + 6, 2);
+    std::memcpy(&count, bytes + 8, 2);
+    if (size < 10 + size_t(count) * 14 || line == 0) return EDEN_DSMOD_FALSE;
+    std::vector<EdenDsmodFontGlyph> glyphs(count);
+    for (u16 i = 0; i < count; ++i) {
+        const u8* g = bytes + 10 + size_t(i) * 14;
+        std::memcpy(&glyphs[i].x, g, 2);
+        std::memcpy(&glyphs[i].y, g + 2, 2);
+        std::memcpy(&glyphs[i].w, g + 4, 2);
+        std::memcpy(&glyphs[i].h, g + 6, 2);
+        std::memcpy(&glyphs[i].bearing_x, g + 8, 2);
+        std::memcpy(&glyphs[i].bearing_y, g + 10, 2);
+        std::memcpy(&glyphs[i].advance, g + 12, 2);
+    }
+    sink(receiver, line, first, glyphs.data(), count);
+    return EDEN_DSMOD_TRUE;
+}
+
+const EdenDsmodFontExtensions kFontExtensions = {
+    EDEN_DSMOD_FONT_EXT_VERSION, sizeof(EdenDsmodFontExtensions), EDEN_DSMOD_FONT_EXT_HASH, DecodeFont,
+};
+
 const EdenDsmodModuleApi kModule = {
     EDEN_DSMOD_MODULE_ABI_VERSION,
     sizeof(EdenDsmodModuleApi),
@@ -578,3 +608,4 @@ const EdenDsmodModuleExtensions kExtensions = {
 
 DSMOD_SDK_EXPORT_MODULE(kModule)
 DSMOD_SDK_EXPORT_EXTENSIONS(kExtensions)
+DSMOD_SDK_EXPORT_FONT_EXTENSIONS(kFontExtensions)

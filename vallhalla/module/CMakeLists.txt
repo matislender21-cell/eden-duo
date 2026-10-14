@@ -12,7 +12,7 @@ target_include_directories(vallhalla PRIVATE "${EDEN_SRC}" "${EDEN_SRC}/../exter
 set_target_properties(vallhalla PROPERTIES PREFIX "" OUTPUT_NAME "010086500D3C8000"
                       CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vallhalla.exports"
-     "{ global: eden_dsmod_get_module; eden_dsmod_get_extensions; local: *; };\n")
+     "{ global: eden_dsmod_get_module; eden_dsmod_get_extensions; eden_dsmod_get_font_extensions; local: *; };\n")
 target_link_options(vallhalla PRIVATE
     "-Wl,--version-script=${CMAKE_CURRENT_BINARY_DIR}/vallhalla.exports" "-Wl,--no-undefined")
 if(ANDROID)
