@@ -19,7 +19,9 @@
 //   va_zr_req   1 while the module wants ZR pressed (the package presses it, then acks)
 //   va_started  1 while a shake-started mix is running in the game
 //   va_wiggle   0..4 shaker frame (0 far left, 2 middle, 4 far right) from the finger's motion
-//   va_fill     0..100 mixing time towards the blend point (5 s); va_blended 1 past it
+//   va_fill     0..100: while shaking, time towards the blend point (5 s); full once let go
+//   va_blended  1 when the drink is (or will be) blended; va_done 1 mixed / 2 blended after
+//               a shake-mix ended (shows "Success!!") until the drink is served or Reset
 // Actions:
 //   skip        the player held a finger on the overlay (emergency): hide it until the mode
 //               next changes. A plain tap does nothing: the bar stays locked while talking.
@@ -29,6 +31,7 @@
 //               left, still, right, fast right). Real back-and-forth motion starts the mix (ZR).
 //   shake_end   the shaker was let go: stops the mix (ZR again) if a shake started it
 //   zr_done     the package pressed ZR for us
+//   reset       the player pressed Reset: empty the bar
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
 
 #include <algorithm>
@@ -103,6 +106,7 @@ struct Module {
     u64 rev_ticks[2] = {0, 0}; // ticks of the last two direction reversals
     bool started = false;   // we pressed ZR to start a mix that is still running
     u64 mix_ticks = 0;      // how long the current / last mix has run
+    int done = 0;           // last shake-mix finished: 0 no, 1 mixed, 2 blended (Success!!)
     int zr_pending = 0;     // ZR presses still to be made
     u64 last_zr = 0;        // tick of our last ZR press
     u64 last_shake = 0;     // tick of the last shake sample on the shaker
@@ -265,14 +269,16 @@ struct Module {
         if (shaking && !started) { // start the mix
             started = true;
             mix_ticks = 0;
+            done = 0;
             ++zr_pending;
         }
     }
 
     void ShakeEnd() {
         has_pos = false;
-        if (started) { // stop the mix
+        if (started) { // stop the mix: any mix is a finished drink, 5 s or more is blended
             started = false;
+            done = mix_ticks >= kBlendTicks ? 2 : 1;
             ++zr_pending;
             if (mode < 0) manual = true; // like Mix: while unsure, the overlay comes back
         }
@@ -297,7 +303,10 @@ struct Module {
             if (mode < 0) manual = before; // lost track: keep what the player sees
             skip = false;
             emergency = false;
-            if (mode == 0 && !started) mix_ticks = 0; // drink served: empty the bar
+            if (mode == 0 && !started) { // drink served: empty the bar
+                mix_ticks = 0;
+                done = 0;
+            }
             last_mode = mode;
         }
         if (emergency && ++unused > kEmergencyIdle) { // opened by mistake (or done): lock again
@@ -332,6 +341,13 @@ struct Module {
             ShakeEnd();
             return true;
         }
+        if (a == "reset") { // the player pressed Reset: empty the bar
+            if (!started) {
+                mix_ticks = 0;
+                done = 0;
+            }
+            return true;
+        }
         if (a == "zr_done") {
             if (zr_pending > 0) --zr_pending;
             last_zr = ticks;
@@ -356,8 +372,12 @@ struct Module {
         h->publish_i64(h->userdata, "va_zr_req", zr_pending > 0 && ticks - last_zr >= kZrGap ? 1 : 0);
         h->publish_i64(h->userdata, "va_started", started ? 1 : 0);
         h->publish_i64(h->userdata, "va_wiggle", Wiggle());
-        h->publish_i64(h->userdata, "va_fill", s64(std::min<u64>(100, mix_ticks * 100 / kBlendTicks)));
-        h->publish_i64(h->userdata, "va_blended", mix_ticks >= kBlendTicks ? 1 : 0);
+        // While shaking the bar counts towards blending (full at 5 s); once let go the drink is
+        // done, so the bar is full: blue for mixed, light for blended.
+        h->publish_i64(h->userdata, "va_fill",
+                       done ? 100 : s64(std::min<u64>(100, mix_ticks * 100 / kBlendTicks)));
+        h->publish_i64(h->userdata, "va_blended", done == 2 || (started && mix_ticks >= kBlendTicks) ? 1 : 0);
+        h->publish_i64(h->userdata, "va_done", done);
         const char* st = mode == 1 ? "auto: mixing"
                          : mode == 0 ? (skip ? "auto: talking (opened by hold)" : "auto: talking")
                          : cands.empty() ? "auto: searching"

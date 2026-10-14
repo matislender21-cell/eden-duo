@@ -179,9 +179,26 @@ int main() {
     failures += ints["va_fill"] != 100 || ints["va_blended"] != 1;
     ext->on_action(inst, "shake_end", 0);
     for (int i = 0; i < 30; ++i) frame(-1);
-    std::printf("let go: ZR %d (want 2), started %lld, fill stays %lld\n", zr, (long long)ints["va_started"],
-                (long long)ints["va_fill"]);
-    failures += zr != 2 || ints["va_started"] != 0 || ints["va_fill"] != 100;
+    std::printf("let go after 5 s: ZR %d (want 2), started %lld, fill %lld, done %lld (want 2)\n", zr,
+                (long long)ints["va_started"], (long long)ints["va_fill"], (long long)ints["va_done"]);
+    failures += zr != 2 || ints["va_started"] != 0 || ints["va_fill"] != 100 || ints["va_done"] != 2;
+    ext->on_action(inst, "reset", 0);
+    frame(-1);
+    std::printf("Reset: fill %lld done %lld\n", (long long)ints["va_fill"], (long long)ints["va_done"]);
+    failures += ints["va_fill"] != 0 || ints["va_done"] != 0;
+    last_x = -1;
+    for (int i = 0; i < 12; ++i) { // a tiny shake, then let go at once
+        const int x = 700 + ((i / 4) % 2 ? 40 : -40) * (i % 4) / 4;
+        frame(at(x, 650));
+    }
+    const int64_t mid_fill = ints["va_fill"];
+    ext->on_action(inst, "shake_end", 0);
+    for (int i = 0; i < 30; ++i) frame(-1);
+    std::printf("tiny shake: fill while shaking %lld, after letting go %lld, done %lld blended %lld\n",
+                (long long)mid_fill, (long long)ints["va_fill"], (long long)ints["va_done"],
+                (long long)ints["va_blended"]);
+    failures += mid_fill > 10 || ints["va_fill"] != 100 || ints["va_done"] != 1 || ints["va_blended"] != 0;
+    zr -= 2; // that mix pressed ZR twice more
     for (int i = 0; i < 40; ++i) { // shake again, then the drag is cancelled (no shake_end)
         const int x = 700 + ((i / 4) % 2 ? 40 : -40) * (i % 4) / 4;
         frame(at(x, 650));
@@ -191,8 +208,8 @@ int main() {
     failures += zr != 4 || ints["va_started"] != 0;
     state(0);
     run(30);
-    std::printf("served (talking): fill %lld\n", (long long)ints["va_fill"]);
-    failures += ints["va_fill"] != 0;
+    std::printf("served (talking): fill %lld done %lld\n", (long long)ints["va_fill"], (long long)ints["va_done"]);
+    failures += ints["va_fill"] != 0 || ints["va_done"] != 0;
     mod->destroy(inst);
 
     // ---- seed: the usual spot is trusted from the first tick ----
