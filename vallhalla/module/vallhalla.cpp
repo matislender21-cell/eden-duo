@@ -137,12 +137,12 @@ constexpr Recipe kRecipes[] = {
     {"Zen Star", {4, 4, 4, 4, 4}, true, false, false},
 };
 // Each drink's sprite in the game's data (35x53), by its exact name as the probe listed it on the
-// player's copy (14 Oct). The game spells Sugar Rush's sprite "Sugar Sush spr". Frothy Water has
-// no 35x53 sprite there: it keeps a name search until its sprite is found.
+// player's copy (14 Oct). The game spells Sugar Rush's sprite "Sugar Sush spr", and Frothy Water
+// uses the Beer sprite (as in the game).
 constexpr const char* kDrinkSprite[] = {
     "Badtouch spr", "Beer spr", "Bleeding Jane spr", "Bloom Light spr", "Blue Fairy spr", "Brandtini spr",
     "Cobalt Velvet spr", "Crevice Spike spr", "Flaming Moai spr", "Fluffy Dream spr", "Fringe Weaver spr",
-    "~frothy", "Grizzly Temple spr", "Gut Punch spr", "Marsblast spr", "Mercuryblast spr", "Moonblast spr",
+    "Beer spr", "Grizzly Temple spr", "Gut Punch spr", "Marsblast spr", "Mercuryblast spr", "Moonblast spr",
     "Piano Man spr", "Piano Woman spr", "Piledriver spr", "Sparkle Star spr", "Sugar Sush spr",
     "Sunshine Cloud spr", "Suplex spr", "Zen Star spr",
 };
