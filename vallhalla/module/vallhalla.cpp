@@ -110,6 +110,9 @@ constexpr u64 kGameTotalOff = 0x990, kGameAgedOff = 0x9C0, kGameIceOff = 0x9F0;
 // Whether the game is mixing (bar detective mixing finder, 14 Oct): +0x880 reads 1 while mixing
 // and +0x800 reads 1 while not; trusted only while they disagree.
 constexpr u64 kGameMixingOff = 0x880, kGameIdleOff = 0x800;
+// +0x800 is really "a drink is ready" (1 after a mix, failed or not, and at once when the bottled
+// A Fedora goes in; 0 while mixing and after Reset). Ready with no ingredients = A Fedora.
+constexpr int kFedora = 1000; // drink index of the bottled A Fedora (not in kRecipes)
 constexpr u64 kGameMixGrace = 45; // ticks the game may take to follow our own ZR press
 constexpr int kErrN = 4;                 // error windows spawned by a failed drink
 constexpr u64 kErrStep = 7;              // ~0.12 s between two windows popping up
@@ -225,7 +228,8 @@ struct Module {
     u64 cur_x = 0;          // the trusted switch (0 = none)
     bool game_ok = false;   // the shaker's contents were read from the game this tick
     bool full_after = false;
-    int game_mixing = -1;   // the game's own mixing state: -1 unknown, 0 / 1 // the game still held the finished drink's contents (see Tick)
+    int game_mixing = -1;   // the game's own mixing state: -1 unknown, 0 / 1
+    int game_ready = -1;    // the game has a drink ready (+0x800): -1 unknown, 0 / 1 // the game still held the finished drink's contents (see Tick)
     bool ice = false, aged = false;  // Ice / Age toggled on for this drink
     int result = 0;         // 0 nothing yet, 1 a recipe (success), 2 failed
     int drink = -1;         // kRecipes index when result == 1
@@ -587,6 +591,26 @@ struct Module {
         Track();
         game_ok = ReadGame();
         game_mixing = ReadGameMixing();
+        {
+            double r;
+            game_ready = cur_x && ReadF64(cur_x + kGameIdleOff, r) && (r == 0 || r == 1) ? int(r) : -1;
+        }
+        const int game_total = counts[0] + counts[1] + counts[2] + counts[3] + counts[4];
+        // The bottled A Fedora: the game has a drink ready with nothing poured. It is a finished
+        // drink at once (Serve), mixed or not.
+        if (game_ok && game_ready == 1 && game_total == 0 && game_mixing != 1 && !started && result == 0) {
+            drink = kFedora;
+            big = false;
+            result = 1;
+            done = 1;
+            done_tick = ticks;
+            err_closed = 0;
+        }
+        // Reset in the game: no drink ready any more (also clears A Fedora, which has no contents).
+        if (game_ok && result != 0 && !started && game_ready == 0 && game_total == 0 && ticks > done_tick + 60) {
+            mix_ticks = 0;
+            NewDrink();
+        }
         // Mixing started or stopped in the game itself (ZR on the controller or the top screen):
         // the bottom screen follows, the shaker shaking on its own like a Mix-button mix. Our own
         // ZR presses are given a moment to reach the game before its state counts.
@@ -837,7 +861,14 @@ struct Module {
             std::snprintf(n, sizeof n, "va_errf%d", i);
             h->publish_i64(h->userdata, n, ErrVisible(i) ? ErrFrame(i) : 0);
         }
-        if (result == 1) {
+        if (result == 1 && drink == kFedora) {
+            h->publish_text(h->userdata, "va_drink_src", "module:gm:~fedora:0:4");
+            h->publish_text(h->userdata, "va_drink_name", "A Fedora");
+            std::scoped_lock l2{picked_mutex};
+            const auto it = picked.find("~fedora");
+            h->publish_text(h->userdata, "va_drink_sprite",
+                            ("sprite: " + (it == picked.end() ? std::string("loading...") : it->second)).c_str());
+        } else if (result == 1) {
             // exact names go in as their lookup key ("Sugar Sush spr" -> "sugarsushspr": no spaces in the src)
             const std::string spr = kDrinkSprite[drink][0] == '~' ? std::string(kDrinkSprite[drink])
                                                                    : vallhalla::GmReader::Key(kDrinkSprite[drink]);
