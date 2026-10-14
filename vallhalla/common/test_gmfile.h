@@ -1,7 +1,8 @@
 // Test helper: a synthetic GameMaker data file (GMS2-style sprites with the -1 header, a
 // background, two PNG texture pages). Sprites: spr_shaker (2 frames, 16x32: texture 0 at x 0
 // and x 16; pixel (0,0) of texture 0 has red = 1), spr_ui_slot, spr_unrelated; background
-// bg_doodle (64x48, texture 1).
+// bg_doodle (64x48, texture 1). Sounds: snd_clink (embedded WAV, AUDO 0), snd_shake (OGG in
+// AUDO 1), snd_ext (its own file snd_ext.ogg), snd_grouped (audiogroup1.dat, AUDO 0).
 #pragma once
 #include <cstdint>
 #include <cstring>
@@ -9,6 +10,7 @@
 #include <string>
 #include <vector>
 // (the includer provides stb_image_write.h with its implementation)
+#include "test_ogg.h"
 
 namespace vallhalla_test {
 struct W { // little writer with back-patching
@@ -32,6 +34,44 @@ inline std::vector<uint8_t> Png(int w, int h, uint8_t r, uint8_t g, uint8_t b) {
     return out;
 }
 
+inline std::vector<uint8_t> Ogg() {
+    return std::vector<uint8_t>(kToneOgg, kToneOgg + sizeof kToneOgg);
+}
+inline std::vector<uint8_t> Wav16(std::vector<int16_t> s) { // mono 22050 Hz
+    std::vector<uint8_t> b;
+    W w{b};
+    const uint32_t data = uint32_t(s.size() * 2);
+    w.bytes("RIFF", 4); w.u32(36 + data); w.bytes("WAVE", 4);
+    w.bytes("fmt ", 4); w.u32(16); w.u16(1); w.u16(1); w.u32(22050); w.u32(44100); w.u16(2); w.u16(16);
+    w.bytes("data", 4); w.u32(data); w.bytes(s.data(), data);
+    return b;
+}
+inline void AppendAudo(W& w, const std::vector<std::vector<uint8_t>>& items) {
+    w.u32(uint32_t(items.size()));
+    const size_t ptrs = w.pos();
+    for (size_t i = 0; i < items.size(); ++i) w.u32(0);
+    for (size_t i = 0; i < items.size(); ++i) {
+        while (w.pos() % 4) w.b.push_back(0);
+        w.at32(ptrs + 4 * i, uint32_t(w.pos()));
+        w.u32(uint32_t(items[i].size()));
+        w.bytes(items[i].data(), items[i].size());
+    }
+}
+// audiogroup1.dat: a FORM holding only an AUDO chunk
+inline std::vector<uint8_t> BuildFakeAudioGroup() {
+    std::vector<uint8_t> file;
+    W w{file};
+    file.insert(file.end(), {'F', 'O', 'R', 'M'});
+    w.u32(0);
+    w.bytes("AUDO", 4);
+    const size_t p = w.pos();
+    w.u32(0);
+    AppendAudo(w, {Ogg()});
+    w.at32(p, uint32_t(w.pos() - p - 4));
+    w.at32(4, uint32_t(file.size() - 8));
+    return file;
+}
+
 inline std::vector<uint8_t> BuildFakeGm() {
     std::vector<uint8_t> file;
     W w{file};
@@ -42,10 +82,12 @@ inline std::vector<uint8_t> BuildFakeGm() {
     // STRG first so names have offsets
     size_t strg = chunk("STRG");
     std::map<std::string, uint32_t> str;
-    const char* names[] = {"VA11HallA", "spr_shaker", "spr_ui_slot", "spr_unrelated", "bg_doodle"};
-    w.u32(5);
-    for (int i = 0; i < 5; ++i) w.u32(0);
-    for (int i = 0; i < 5; ++i) {
+    const char* names[] = {"VA11HallA", "spr_shaker", "spr_ui_slot", "spr_unrelated", "bg_doodle",
+                           "snd_clink", "snd_shake", "snd_ext", "snd_grouped", ".wav", ".ogg", "snd_ext.ogg"};
+    const int nn = int(sizeof names / sizeof names[0]);
+    w.u32(uint32_t(nn));
+    for (int i = 0; i < nn; ++i) w.u32(0);
+    for (int i = 0; i < nn; ++i) {
         w.at32(strg + 8 + 4 * i, uint32_t(w.pos()));
         w.u32(uint32_t(std::strlen(names[i])));
         str[names[i]] = uint32_t(w.pos());
@@ -106,6 +148,25 @@ inline std::vector<uint8_t> BuildFakeGm() {
     w.at32(ent[0] + 8, uint32_t(w.pos())); w.bytes(p0.data(), p0.size());
     w.at32(ent[1] + 8, uint32_t(w.pos())); w.bytes(p1.data(), p1.size());
     end_chunk(txtr);
+    // SOND: name, flags, type, file, effects, volume, pitch, group, AUDO index
+    size_t sond = chunk("SOND");
+    w.u32(4);
+    size_t so_ptrs = w.pos();
+    for (int i = 0; i < 4; ++i) w.u32(0);
+    auto sound = [&](int i, const char* n, uint32_t flags, const char* type, const char* f, uint32_t group, int32_t id) {
+        w.at32(so_ptrs + 4 * i, uint32_t(w.pos()));
+        const float vol = 0.8f, pitch = 1.0f;
+        w.u32(str[n]); w.u32(flags); w.u32(str[type]); w.u32(f ? str[f] : str[n]); w.u32(0);
+        w.bytes(&vol, 4); w.bytes(&pitch, 4); w.u32(group); w.u32(uint32_t(id));
+    };
+    sound(0, "snd_clink", 0x65, ".wav", nullptr, 0, 0);
+    sound(1, "snd_shake", 0x66, ".ogg", nullptr, 0, 1);
+    sound(2, "snd_ext", 0x64, ".ogg", "snd_ext.ogg", 0, -1);
+    sound(3, "snd_grouped", 0x66, ".ogg", nullptr, 1, 0);
+    end_chunk(sond);
+    size_t audo = chunk("AUDO");
+    AppendAudo(w, {Wav16({100, -100, 200, -200, 300}), Ogg()});
+    end_chunk(audo);
     w.at32(4, uint32_t(file.size() - 8));
     return file;
 }

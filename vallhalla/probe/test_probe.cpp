@@ -22,12 +22,15 @@ std::map<std::string, int64_t> ints;
 std::map<std::string, std::string> texts;
 int failures = 0;
 
+std::map<std::string, std::vector<uint8_t>> extra; // files next to game.unx
 size_t ReadRomfs(void*, const char* path, uint64_t off, void* out, size_t n) {
-    if (std::string(path) != "game.unx") return 0;
-    if (!out) return file.size();
-    if (off >= file.size()) return 0;
-    n = std::min<size_t>(n, file.size() - off);
-    std::memcpy(out, file.data() + off, n);
+    const std::vector<uint8_t>* f = std::string(path) == "game.unx" ? &file : nullptr;
+    if (auto it = extra.find(path); it != extra.end()) f = &it->second;
+    if (!f) return 0;
+    if (!out) return f->size();
+    if (off >= f->size()) return 0;
+    n = std::min<size_t>(n, f->size() - off);
+    std::memcpy(out, f->data() + off, n);
     return n;
 }
 void PubI(void*, const char* n, int64_t v) { ints[n] = v; }
@@ -39,6 +42,8 @@ void Log(void*, uint32_t, const char*) { ++log_lines; }
 
 int main() {
     file = vallhalla_test::BuildFakeGm();
+    extra["snd_ext.ogg"] = vallhalla_test::Ogg();
+    extra["audiogroup1.dat"] = vallhalla_test::BuildFakeAudioGroup();
 
     auto* mod = eden_dsmod_get_module(EDEN_DSMOD_MODULE_ABI_VERSION, EDEN_DSMOD_MODULE_ABI_HASH);
     auto* ext = eden_dsmod_get_extensions(EDEN_DSMOD_EXT_VERSION, EDEN_DSMOD_EXT_HASH);
@@ -56,7 +61,7 @@ int main() {
     for (int i = 0; i < 10; ++i) mod->tick(inst, &host);
     for (const char* k : {"pr.status", "pr.file", "pr.version", "pr.chunks", "pr.counts", "pr.mode", "pr.pos", "pr.name", "pr.info", "pr.src", "pr.near0", "pr.near1"})
         std::printf("%-10s %s\n", k, texts[k].c_str());
-    failures += texts["pr.name"] != "spr_shaker" || texts["pr.counts"].find("3 sprites, 1 backgrounds, 2 textures: png=2") == std::string::npos;
+    failures += texts["pr.name"] != "spr_shaker" || texts["pr.counts"].find("3 sprites, 1 backgrounds, 4 sounds, 2 textures: png=2") == std::string::npos;
     struct Got { uint32_t w = 0, h = 0; std::vector<uint8_t> px; } got;
     auto sink = [](void* r, uint32_t ww, uint32_t hh, const uint8_t* p, size_t n) {
         auto* g = static_cast<Got*>(r); g->w = ww; g->h = hh; g->px.assign(p, p + n);
@@ -92,6 +97,23 @@ int main() {
     texts.clear(); mod->tick(inst, &host);
     std::printf("all mode: %s %s\n", texts["pr.mode"].c_str(), texts["pr.pos"].c_str());
     failures += texts["pr.pos"] != "1 / 4";
+    ext->on_action(inst, "mode", 0);
+    texts.clear(); mod->tick(inst, &host);
+    std::printf("sounds mode: %s %s | %s | %s\n", texts["pr.mode"].c_str(), texts["pr.pos"].c_str(),
+                texts["pr.name"].c_str(), texts["pr.info"].c_str());
+    failures += texts["pr.mode"].find("SOUNDS") == std::string::npos || texts["pr.pos"] != "1 / 4" ||
+                texts["pr.info"].find("WAV 0.00 s mono 22050 Hz") == std::string::npos;
+    {
+        bool ext_ok = false, grp_ok = false;
+        for (int i = 0; i < 4; ++i) {
+            ext->on_action(inst, "step", 1);
+            texts.clear(); mod->tick(inst, &host);
+            if (texts["pr.name"] == "snd_ext") ext_ok = texts["pr.info"].find("OGG 0.05 s mono 22050 Hz, from snd_ext.ogg") == 0;
+            if (texts["pr.name"] == "snd_grouped") grp_ok = texts["pr.info"].find("from audiogroup1.dat #0") != std::string::npos;
+        }
+        std::printf("sounds decoded on the device: own file %d, audio group %d\n", ext_ok, grp_ok);
+        failures += !ext_ok || !grp_ok;
+    }
     mod->destroy(inst);
     std::printf("log lines: %d\n", log_lines);
     failures += log_lines < 5;

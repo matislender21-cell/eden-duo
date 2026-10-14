@@ -15,6 +15,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 #include "../common/test_gmfile.h"
+#include "../common/gm_reader.h"
 
 extern "C" const EdenDsmodModuleApi* eden_dsmod_get_module(uint32_t, uint64_t);
 extern "C" const EdenDsmodModuleExtensions* eden_dsmod_get_extensions(uint32_t, uint64_t);
@@ -40,12 +41,16 @@ void PubI(void*, const char* n, int64_t v) { ints[n] = v; }
 std::map<std::string, std::string> texts;
 void PubT(void*, const char* n, const char* v) { texts[n] = v; }
 std::vector<uint8_t> gmfile;
+std::map<std::string, std::vector<uint8_t>> romfs_extra; // other files next to game.unx
 size_t ReadRomfs(void*, const char* path, uint64_t off, void* out, size_t n) {
-    if (std::string(path) != "game.unx") return 0;
-    if (!out) return gmfile.size();
-    if (off >= gmfile.size()) return 0;
-    n = std::min<size_t>(n, gmfile.size() - off);
-    std::memcpy(out, gmfile.data() + off, n);
+    const std::vector<uint8_t>* f = nullptr;
+    if (std::string(path) == "game.unx") f = &gmfile;
+    else if (auto it = romfs_extra.find(path); it != romfs_extra.end()) f = &it->second;
+    if (!f) return 0;
+    if (!out) return f->size();
+    if (off >= f->size()) return 0;
+    n = std::min<size_t>(n, f->size() - off);
+    std::memcpy(out, f->data() + off, n);
     return n;
 }
 void Put(uint64_t a, double v) { std::memcpy(&heap[a - kHeap], &v, 8); }
@@ -382,6 +387,37 @@ int main() {
         std::printf("frame 1 %s, background %s, unknown name refused %s\n", f1 ? "ok" : "FAIL", bg ? "ok" : "FAIL", miss ? "ok" : "FAIL");
         failures += !all || !f1 || !bg || !miss;
         mod->destroy(i3);
+    }
+    // ---- the game's own sounds (decoded on the device, never shipped) ----
+    {
+        gmfile = vallhalla_test::BuildFakeGm();
+        romfs_extra["snd_ext.ogg"] = vallhalla_test::Ogg();
+        romfs_extra["audiogroup1.dat"] = vallhalla_test::BuildFakeAudioGroup();
+        EdenDsmodHostApi hs = host;
+        hs.read_romfs = ReadRomfs;
+        vallhalla::GmReader r;
+        const bool open = r.Open(hs) && r.Sounds().size() == 4;
+        int ch = 0, rate = 0;
+        std::vector<int16_t> pcm;
+        const auto* clink = r.FindSound("snd_clink");
+        const bool wav = clink && r.SoundPcm(*clink, ch, rate, pcm) && ch == 1 && rate == 22050 && pcm.size() == 5 &&
+                         pcm[0] == 100 && pcm[3] == -200;
+        auto ogg_ok = [&](const char* name) {
+            const auto* snd = r.FindSound(name);
+            if (!snd || !r.SoundPcm(*snd, ch, rate, pcm) || ch != 1 || rate != 22050) return false;
+            if (pcm.size() < 1000 || pcm.size() > 1300) return false; // ~50 ms
+            int peak = 0;
+            for (auto v : pcm) peak = std::max(peak, std::abs(int(v)));
+            return peak > 3000; // a real tone came out
+        };
+        const bool in_audo = ogg_ok("snd_shake"), ext = ogg_ok("snd_ext"), grouped = ogg_ok("snd_grouped");
+        const bool part = r.FindSound("~CLIN") == clink && !r.FindSound("snd_nope");
+        std::vector<uint8_t> junk = {'O', 'g', 'g', 'S', 1, 2, 3};
+        const bool refuse = !vallhalla::GmReader::DecodeAudio(junk, ch, rate, pcm);
+        std::printf("game sounds: listed %d, WAV %d, OGG in data file %d, own file %d, audio group %d, by part %d, junk refused %d\n",
+                    open, wav, in_audo, ext, grouped, part, refuse);
+        failures += !open || !wav || !in_audo || !ext || !grouped || !part || !refuse;
+        romfs_extra.clear();
     }
     // ---- package font ----
     {

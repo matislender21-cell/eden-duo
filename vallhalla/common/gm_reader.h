@@ -10,6 +10,10 @@
 // "Shaker Spr" and "SHAKERSPR" are the same). Supports the chunk layouts of GameMaker 1.4 and
 // 2.x (sprite records with or without the -1 header; backgrounds), PNG and GameMaker QOI
 // texture pages. Not thread-safe: the owner serialises calls (the asset worker).
+//
+// Sounds (SOND): r.FindSound("snd_ice") then r.SoundPcm(*s, channels, rate, pcm) decodes it to
+// 16-bit PCM -- embedded WAV/OGG (AUDO in the data file or an audiogroupN.dat) or an external
+// file next to it. The includer compiles stb_vorbis once (see third_party/README.txt).
 
 #pragma once
 
@@ -17,6 +21,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -24,6 +29,18 @@
 
 #include "core/mods/dsmod_module_abi.h"
 #include "stb_image.h" // implementation compiled once by the module
+#ifndef STB_VORBIS_NO_STDIO
+#define STB_VORBIS_NO_STDIO
+#endif
+#ifndef STB_VORBIS_HEADER_ONLY
+#define STB_VORBIS_HEADER_ONLY
+#define VALLHALLA_VORBIS_HEADER_SET
+#endif
+#include "stb_vorbis.c"
+#ifdef VALLHALLA_VORBIS_HEADER_SET
+#undef STB_VORBIS_HEADER_ONLY
+#undef VALLHALLA_VORBIS_HEADER_SET
+#endif
 
 namespace vallhalla {
 
@@ -43,7 +60,136 @@ public:
         return k;
     }
 
+    struct Sound {
+        std::string name, type, file;
+        uint32_t flags = 0;    // 1 embedded, 2 compressed (OGG in AUDO), else a file of its own
+        uint32_t group = 0;    // audio group: 0 the data file, N audiogroupN.dat
+        int32_t audio_id = -1; // index into that AUDO
+        float volume = 1;
+        std::string where;     // filled by SoundBytes: where the bytes came from
+    };
+
     bool Ready() const { return ready_; }
+    const std::vector<Sound>& Sounds() const { return sounds_; }
+
+    // Exact name, or "~part": the shortest name containing it.
+    const Sound* FindSound(const std::string& name) const {
+        const bool part = !name.empty() && name[0] == '~';
+        const std::string want = Key(part ? name.substr(1) : name);
+        const Sound* best = nullptr;
+        for (const auto& snd : sounds_) {
+            const std::string k = Key(snd.name);
+            if (part ? k.find(want) != std::string::npos : k == want)
+                if (!best || k.size() < Key(best->name).size()) best = &snd;
+        }
+        return best;
+    }
+
+    // The sound's encoded bytes (a WAV or an OGG file).
+    // Longer than max_bytes (music): false, with `where` saying how big it is.
+    bool SoundBytes(const Sound& snd, std::vector<uint8_t>& out, std::string* where = nullptr,
+                    uint64_t max_bytes = 64u << 20) {
+        out.clear();
+        if (snd.audio_id >= 0 && (snd.flags & 3)) {
+            std::string file = path_;
+            if (snd.group != 0) {
+                const size_t slash = path_.rfind('/');
+                file = (slash == std::string::npos ? std::string() : path_.substr(0, slash + 1)) + "audiogroup" +
+                       std::to_string(snd.group) + ".dat";
+            }
+            const uint64_t fsize = FileSize(file);
+            uint64_t at = 8; // find AUDO in that FORM
+            while (fsize && at + 8 <= fsize) {
+                uint8_t h[8];
+                if (ReadFrom(file, at, h, 8) != 8) break;
+                uint32_t sz;
+                std::memcpy(&sz, h + 4, 4);
+                if (std::memcmp(h, "AUDO", 4) == 0) {
+                    uint32_t v[2] = {};
+                    if (ReadFrom(file, at + 8, v, 4) != 4 || uint32_t(snd.audio_id) >= v[0]) break;
+                    ReadFrom(file, at + 12 + 4 * uint64_t(snd.audio_id), &v[1], 4);
+                    uint32_t len = 0;
+                    if (ReadFrom(file, v[1], &len, 4) != 4 || len == 0) break;
+                    if (len > max_bytes) {
+                        if (where) *where = file + " #" + std::to_string(snd.audio_id) + ", " + std::to_string(len >> 10) + " KB: too long";
+                        return false;
+                    }
+                    out = ReadVecFrom(file, uint64_t(v[1]) + 4, len);
+                    if (where) *where = file + " #" + std::to_string(snd.audio_id);
+                    return out.size() == len;
+                }
+                at += 8 + uint64_t(sz);
+            }
+            return false;
+        }
+        // its own file next to the data file: "<file>", "<file><type>", "<name><type>", .ogg / .wav
+        const size_t slash = path_.rfind('/');
+        const std::string dir = slash == std::string::npos ? std::string() : path_.substr(0, slash + 1);
+        std::vector<std::string> tries;
+        for (const std::string& base : {snd.file, snd.name}) {
+            if (base.empty()) continue;
+            tries.push_back(dir + base);
+            for (const std::string& ext : {snd.type, std::string(".ogg"), std::string(".wav")})
+                if (!ext.empty()) tries.push_back(dir + base + ext);
+        }
+        for (const auto& t : tries) {
+            const uint64_t n = FileSize(t);
+            if (n < 12) continue;
+            if (n > max_bytes) {
+                if (where) *where = t + ", " + std::to_string(n >> 10) + " KB: too long";
+                return false;
+            }
+            out = ReadVecFrom(t, 0, n);
+            if (where) *where = t;
+            return out.size() == n;
+        }
+        return false;
+    }
+
+    // Decodes a WAV (8/16-bit PCM) or an OGG Vorbis file to interleaved 16-bit samples.
+    static bool DecodeAudio(const std::vector<uint8_t>& in, int& channels, int& rate, std::vector<int16_t>& pcm) {
+        pcm.clear();
+        if (in.size() >= 12 && std::memcmp(in.data(), "RIFF", 4) == 0 && std::memcmp(in.data() + 8, "WAVE", 4) == 0) {
+            int bits = 0, fmt = 0;
+            channels = rate = 0;
+            for (size_t at = 12; at + 8 <= in.size();) {
+                const uint32_t sz = U32(in, at + 4);
+                const size_t body = at + 8;
+                if (std::memcmp(&in[at], "fmt ", 4) == 0 && body + 16 <= in.size()) {
+                    fmt = U16(&in[body]);
+                    channels = U16(&in[body + 2]);
+                    rate = int(U32(in, body + 4));
+                    bits = U16(&in[body + 14]);
+                } else if (std::memcmp(&in[at], "data", 4) == 0) {
+                    if (fmt != 1 || channels < 1 || channels > 2 || (bits != 16 && bits != 8)) return false;
+                    const size_t end = std::min<size_t>(in.size(), body + sz);
+                    if (bits == 16) {
+                        pcm.resize((end - body) / 2);
+                        std::memcpy(pcm.data(), &in[body], pcm.size() * 2);
+                    } else {
+                        for (size_t i = body; i < end; ++i) pcm.push_back(int16_t((int(in[i]) - 128) << 8));
+                    }
+                    return !pcm.empty();
+                }
+                at = body + sz + (sz & 1);
+            }
+            return false;
+        }
+        if (in.size() >= 4 && std::memcmp(in.data(), "OggS", 4) == 0) {
+            short* out = nullptr;
+            const int frames = stb_vorbis_decode_memory(in.data(), int(in.size()), &channels, &rate, &out);
+            if (frames <= 0 || !out) return false;
+            pcm.assign(out, out + size_t(frames) * size_t(channels));
+            std::free(out);
+            return true;
+        }
+        return false;
+    }
+
+    bool SoundPcm(const Sound& snd, int& channels, int& rate, std::vector<int16_t>& pcm) {
+        std::vector<uint8_t> bytes;
+        return SoundBytes(snd, bytes) && DecodeAudio(bytes, channels, rate, pcm);
+    }
     const std::string& Path() const { return path_; }
     const std::vector<Entry>& Entries() const { return entries_; }
 
@@ -174,6 +320,23 @@ private:
     size_t Read(uint64_t off, void* out, size_t n) const {
         return host_.read_romfs ? host_.read_romfs(host_.userdata, path_.c_str(), off, out, n) : 0;
     }
+    size_t ReadFrom(const std::string& file, uint64_t off, void* out, size_t n) const {
+        return host_.read_romfs ? host_.read_romfs(host_.userdata, file.c_str(), off, out, n) : 0;
+    }
+    uint64_t FileSize(const std::string& file) const {
+        return host_.read_romfs ? host_.read_romfs(host_.userdata, file.c_str(), 0, nullptr, 0) : 0;
+    }
+    std::vector<uint8_t> ReadVecFrom(const std::string& file, uint64_t off, uint64_t n) const {
+        std::vector<uint8_t> b(static_cast<size_t>(n));
+        size_t got = 0;
+        while (got < n) {
+            const size_t r = ReadFrom(file, off + got, b.data() + got, size_t(std::min<uint64_t>(n - got, 32ull << 20)));
+            if (r == 0) break;
+            got += r;
+        }
+        b.resize(got);
+        return b;
+    }
     std::vector<uint8_t> ReadVec(uint64_t off, uint64_t n) const {
         std::vector<uint8_t> b(static_cast<size_t>(n));
         size_t got = 0;
@@ -265,6 +428,27 @@ private:
                         break;
                     }
                 Add(std::move(e));
+            }
+        }
+        if (const Chunk* c = FindChunk("SOND")) {
+            // Name, Flags, Type, File, Effects, Volume, Pitch, then (GameMaker 1.4+) the audio
+            // group and the AUDO index; older files have a preload flag instead of the group.
+            const auto b = ReadVec(c->off, c->size);
+            const uint32_t n = U32(b, 0);
+            for (uint32_t i = 0; i < n && 4 + 4 * i < b.size(); ++i) {
+                const uint32_t p = U32(b, 4 + 4 * i);
+                if (p < c->off || p - c->off + 36 > b.size()) continue;
+                const size_t r = p - c->off;
+                Sound snd;
+                snd.name = Str(U32(b, r));
+                snd.flags = U32(b, r + 4);
+                snd.type = Str(U32(b, r + 8));
+                snd.file = Str(U32(b, r + 12));
+                std::memcpy(&snd.volume, &b[r + 20], 4);
+                snd.group = U32(b, r + 28);
+                snd.audio_id = int32_t(U32(b, r + 32));
+                if (snd.group > 64) snd.group = 0;
+                if (!snd.name.empty()) sounds_.push_back(std::move(snd));
             }
         }
         if (const Chunk* c = FindChunk("TXTR")) {
@@ -412,6 +596,7 @@ private:
     std::vector<uint8_t> strg_, tpag_;
     uint64_t strg_off_ = 0, tpag_off_ = 0;
     std::vector<Entry> entries_;
+    std::vector<Sound> sounds_;
     std::unordered_map<std::string, size_t> by_key_;
     std::vector<Tex> textures_;
     std::vector<Cached> cache_;

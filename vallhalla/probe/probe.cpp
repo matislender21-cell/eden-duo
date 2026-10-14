@@ -9,6 +9,8 @@
 // Actions: step (argument = +-1/10/100), frame (next frame), mode (matches / all), find (next
 // match of keyword group argument).
 // Images: module key "spr:<index>:<frame>" -> the sprite frame, centred on a square canvas.
+// Mode "sounds" lists the game's sounds instead (likely ice / shaker ones first) and decodes the
+// one shown, to prove it can be played from the player's copy (nothing is shipped).
 
 #include <algorithm>
 #include <atomic>
@@ -23,6 +25,8 @@
 #include "core/mods/dsmod_module_abi.h"
 #include "core/mods/dsmod_module_extensions.h"
 #include "core/mods/modules/dsmod_module_sdk.h"
+
+#include "../common/gm_reader.h" // sounds (SOND / AUDO) and their decoding
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -165,7 +169,10 @@ struct Probe {
     std::atomic<bool> ready{false};
 
     // browser
-    int filter = 0; // 0 likely names, 1 drinks (35x53 sprites), 2 everything
+    int filter = 0; // 0 likely names, 1 drinks (35x53 sprites), 2 everything, 3 sounds
+    vallhalla::GmReader gm;                 // sounds
+    std::vector<size_t> sound_order;        // gm.Sounds() indexes, likely ones first
+    std::map<size_t, std::string> sound_info; // decoded once: where it lives, length
     std::vector<size_t> matches;
     size_t pos = 0, frame = 0;
     std::vector<size_t> picked; // entry indexes the player marked as "used in my art"
@@ -359,6 +366,20 @@ struct Probe {
                     t.size = (it == blobs.end() ? d.txtr.off + d.txtr.size : *it) - t.off;
                 }
             }
+            if (gm.Open(host)) {
+                const auto& snds = gm.Sounds();
+                std::vector<std::pair<int, size_t>> order;
+                for (size_t i = 0; i < snds.size(); ++i) {
+                    const std::string n = Lower(snds[i].name);
+                    int score = 0;
+                    for (const char* k : {"ice", "shak", "clink", "cube", "rock", "glass", "mix", "blend", "pour"})
+                        if (n.find(k) != std::string::npos) ++score;
+                    order.push_back({-score, i});
+                }
+                std::stable_sort(order.begin(), order.end(),
+                                 [](const auto& a, const auto& b) { return a.first < b.first; });
+                for (const auto& o : order) sound_order.push_back(o.second);
+            }
             Rebuild();
             ready = true;
             size_t sprites = 0, bgs = 0;
@@ -368,8 +389,8 @@ struct Probe {
             std::string f;
             for (const auto& [k, v] : fmts) f += " " + k + "=" + std::to_string(v);
             char b[200];
-            std::snprintf(b, sizeof b, "%zu sprites, %zu backgrounds, %zu textures:%s", sprites, bgs,
-                          d.textures.size(), f.c_str());
+            std::snprintf(b, sizeof b, "%zu sprites, %zu backgrounds, %zu sounds, %zu textures:%s", sprites, bgs,
+                          gm.Sounds().size(), d.textures.size(), f.c_str());
             counts = b;
             status = "Ready. Use the buttons to browse.";
             LogCatalog();
@@ -385,6 +406,12 @@ struct Probe {
 
     void Rebuild() {
         matches.clear();
+        if (filter == 3) {
+            matches = sound_order;
+            pos = 0;
+            frame = 0;
+            return;
+        }
         for (size_t i = 0; i < d.entries.size(); ++i) {
             if (filter == 2) {
                 matches.push_back(i);
@@ -413,9 +440,13 @@ struct Probe {
             frame = 0;
             return true;
         }
-        if (a == "frame" && !matches.empty()) {
+        if (a == "frame" && !matches.empty() && filter != 3) {
             const auto& e = d.entries[matches[pos]];
             if (!e.tpags.empty()) frame = (frame + 1) % e.tpags.size();
+            return true;
+        }
+        if (a == "pick" && !matches.empty() && filter == 3) {
+            Log("sound pick: " + DescribeSound(matches[pos]));
             return true;
         }
         if (a == "pick" && !matches.empty()) {
@@ -447,7 +478,7 @@ struct Probe {
             return true;
         }
         if (a == "mode") {
-            filter = (filter + 1) % 3;
+            filter = (filter + 1) % 4;
             Rebuild();
             return true;
         }
@@ -460,6 +491,31 @@ struct Probe {
         std::snprintf(b, sizeof b, "%s  %ux%u  x%zu%s", e.name.c_str(), e.w, e.h, e.tpags.size(),
                       e.background ? "  (bg)" : "");
         return b;
+    }
+
+    // "snd_ice  embedded OGG (audiogroup1.dat #12), 0.42 s stereo 44100 Hz": decodes it once.
+    std::string DescribeSound(size_t i) {
+        const auto& snd = gm.Sounds()[i];
+        auto it = sound_info.find(i);
+        if (it == sound_info.end()) {
+            std::vector<u8> bytes;
+            std::string where;
+            int ch = 0, rate = 0;
+            std::vector<int16_t> pcm;
+            std::string info;
+            if (!gm.SoundBytes(snd, bytes, &where, 1536u << 10)) { // music is skipped, not decoded
+                info = where.empty() ? "NOT FOUND (" + snd.file + ")" : "music/long: " + where;
+            } else if (!vallhalla::GmReader::DecodeAudio(bytes, ch, rate, pcm) || ch <= 0 || rate <= 0) {
+                info = "found in " + where + " but can't decode (" + std::to_string(bytes.size()) + " bytes)";
+            } else {
+                char b[200];
+                std::snprintf(b, sizeof b, "%s %.2f s %s %d Hz, from %s", bytes[0] == 'O' ? "OGG" : "WAV",
+                              double(pcm.size() / size_t(ch)) / rate, ch == 1 ? "mono" : "stereo", rate, where.c_str());
+                info = b;
+            }
+            it = sound_info.emplace(i, info).first;
+        }
+        return snd.name + "  " + it->second;
     }
 
     void Log(const std::string& line) const {
@@ -475,6 +531,12 @@ struct Probe {
     void LogCatalog() const {
         Log("file " + d.path + ", " + d.version + ", " + counts);
         for (size_t i = 0; i < d.entries.size(); ++i) Log(std::to_string(i) + " " + Describe(i));
+        for (size_t i = 0; i < gm.Sounds().size(); ++i) {
+            const auto& snd = gm.Sounds()[i];
+            Log("sound " + std::to_string(i) + " " + snd.name + " file '" + snd.file + "' flags " +
+                std::to_string(snd.flags) + " group " + std::to_string(snd.group) + " id " +
+                std::to_string(snd.audio_id));
+        }
     }
 
     void Sample(const EdenDsmodHostApi* h) const {
@@ -500,7 +562,28 @@ struct Probe {
         }
         pt("pr.pick_page", "page " + std::to_string(page + 1) + " of " + std::to_string(pages));
         pt("pr.later", later_mode ? "LATER: ON (picks are for future ideas)" : "LATER: OFF (picks are for now)");
-        pt("pr.mode", filter == 0 ? "showing: likely names" : filter == 1 ? "showing: drinks (35x53)" : "showing: everything");
+        pt("pr.mode", filter == 0   ? "showing: likely names"
+                      : filter == 1 ? "showing: drinks (35x53)"
+                      : filter == 2 ? "showing: everything"
+                                    : "showing: SOUNDS (ice / shaker first)");
+        if (filter == 3 && ready && !matches.empty()) {
+            char b[64];
+            std::snprintf(b, sizeof b, "%zu / %zu", pos + 1, matches.size());
+            pt("pr.pos", b);
+            const auto& snd = gm.Sounds()[matches[pos]];
+            pt("pr.name", snd.name);
+            const auto it = sound_info.find(matches[pos]);
+            pt("pr.info", it == sound_info.end() ? "(decoding...)" : it->second);
+            pt("pr.picked", "");
+            pt("pr.src", "");
+            for (size_t k = 0; k < kNear; ++k) {
+                const size_t j = pos + k + 1;
+                char n[16];
+                std::snprintf(n, sizeof n, "pr.near%zu", k);
+                pt(n, j < matches.size() ? std::to_string(j + 1) + "  " + gm.Sounds()[matches[j]].name : "");
+            }
+            return;
+        }
         if (!ready || matches.empty()) {
             pt("pr.src", "");
             pt("pr.name", "");
@@ -623,6 +706,7 @@ void TickFn(void* inst, const EdenDsmodHostApi* host) {
             p->host = *host;
             p->Step();
         }
+        if (p->ready && p->filter == 3 && !p->matches.empty()) p->DescribeSound(p->matches[p->pos]);
         p->Sample(host);
     } catch (...) {
         p->status = "The probe hit an error while reading.";
