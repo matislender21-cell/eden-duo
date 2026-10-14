@@ -41,6 +41,9 @@
 //   reset       the player pressed Reset: empty the bar and the shaker
 //   pour        one unit poured (argument 0..4: Adelhyde, Bronson, Delta, Flanergide, Karmotrine)
 //   ice_toggle / age_toggle   Ice / Age toggled (pressing X / Y)
+//   close_err   the player tapped error window <argument> (0..7) away
+// A failed drink pops up 8 error windows (va_err0..7 visible, va_errf0..7 frame: 0 clean,
+// 1/2 glitch); va_err_any blocks the bar until all are closed.
 // After a shake-mix: va_result 1 (a recipe: va_ok) or 2 (failed: va_fail), va_drink_src (the
 // drink's game sprite, or the broken glass) and va_drink_name, until served or Reset.
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
@@ -91,6 +94,8 @@ constexpr u64 kBlendTicks = 300;         // the game blends a drink mixed for 5 
 constexpr int kReversalTicks = 2;        // a direction change counts after this many moving ticks
 constexpr u64 kShakeWindow = 50;         // two reversals within ~0.8 s = shaking
 constexpr u64 kZrGap = 14;               // ticks between two of our ZR presses
+constexpr int kErrN = 8;                 // error windows spawned by a failed drink
+constexpr u64 kErrStep = 7;              // ~0.12 s between two windows popping up
 
 // VA-11 Hall-A drink recipes (names and amounts only). Order: Adelhyde, Bronson Extract,
 // Powdered Delta, Flanergide, Karmotrine (-1 = optional: any amount). Checked against the
@@ -192,6 +197,8 @@ struct Module {
     int result = 0;         // 0 nothing yet, 1 a recipe (success), 2 failed
     int drink = -1;         // kRecipes index when result == 1
     bool big = false;
+    u64 err_tick = 0;       // when the error windows started popping up (failed drink)
+    u32 err_closed = 0;     // bit i: the player tapped window i away
     u64 done_tick = 0;      // when it finished (Success animation)
     int zr_pending = 0;     // ZR presses still to be made
     u64 last_zr = 0;        // tick of our last ZR press
@@ -360,11 +367,27 @@ struct Module {
         }
     }
 
+    // Error windows after a failed drink: they pop up one by one, each with a short glitch,
+    // glitch again now and then, and block the bar until every one is tapped away.
+    bool ErrVisible(int i) const {
+        return result == 2 && ticks >= err_tick + u64(i) * kErrStep && !(err_closed >> i & 1);
+    }
+    int ErrFrame(int i) const { // 0 clean, 1 / 2 the artist's glitch frames
+        const u64 age = ticks - (err_tick + u64(i) * kErrStep);
+        if (age < 8) return 1 + int((age / 2) % 2);
+        if ((ticks + u64(i) * 37) % 150 < 3) return 1 + int(i % 2);
+        return 0;
+    }
+    bool ErrAny() const {
+        return result == 2 && err_closed != (1u << kErrN) - 1;
+    }
+
     void NewDrink() {
         done = 0;
         result = 0;
         drink = -1;
         big = false;
+        err_closed = 0;
         ice = aged = false;
         for (int& c : counts) c = 0;
     }
@@ -376,6 +399,8 @@ struct Module {
             done = mix_ticks >= kBlendTicks ? 2 : 1;
             drink = MatchRecipe(counts, ice, aged, done == 2, &big);
             result = drink >= 0 ? 1 : 2;
+            err_tick = ticks;
+            err_closed = 0;
             done_tick = ticks;
             ++zr_pending;
             if (mode < 0) manual = true; // like Mix: while unsure, the overlay comes back
@@ -540,6 +565,10 @@ struct Module {
             ++counts[arg];
             return true;
         }
+        if (a == "close_err" && arg >= 0 && arg < kErrN) { // tapped an error window away
+            if (ErrVisible(int(arg))) err_closed |= 1u << arg;
+            return true;
+        }
         if (a == "ice_toggle") {
             if (done) NewDrink();
             ice = !ice;
@@ -587,6 +616,14 @@ struct Module {
         h->publish_i64(h->userdata, "va_result", result);
         h->publish_i64(h->userdata, "va_ok", result == 1 ? 1 : 0);
         h->publish_i64(h->userdata, "va_fail", result == 2 ? 1 : 0);
+        h->publish_i64(h->userdata, "va_err_any", ErrAny() ? 1 : 0);
+        for (int i = 0; i < kErrN; ++i) {
+            char n[16];
+            std::snprintf(n, sizeof n, "va_err%d", i);
+            h->publish_i64(h->userdata, n, ErrVisible(i) ? 1 : 0);
+            std::snprintf(n, sizeof n, "va_errf%d", i);
+            h->publish_i64(h->userdata, n, ErrVisible(i) ? ErrFrame(i) : 0);
+        }
         if (result == 1) {
             std::string key = std::string("module:gm:~") + kRecipes[drink].name + "@35x53:0:4";
             h->publish_text(h->userdata, "va_drink_src", key.c_str());

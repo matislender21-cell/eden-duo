@@ -346,6 +346,22 @@ int main() {
         ok = ok && ints["va_result"] == 2;
         mix({0, 0, 0, 0, 0, 0, 2, 3, 4, 4}, true, false, 340);
         ok = ok && ints["va_result"] == 1 && texts["va_drink_name"] == "Moonblast";
+        {   // a failed drink: windows pop one by one, block, close on tap
+            mix({0, 1, 2}, false, false, 60);
+            int shown_early = int(ints["va_err0"] + ints["va_err7"]);
+            for (int i = 0; i < 60; ++i) tick();
+            int all = 0;
+            for (int i = 0; i < 8; ++i) all += int(ints["va_err" + std::to_string(i)]);
+            const bool blocked = ints["va_err_any"] == 1;
+            for (int i = 7; i >= 1; --i) ext->on_action(i4, "close_err", i);
+            tick();
+            const bool still = ints["va_err_any"] == 1 && ints["va_err0"] == 1;
+            ext->on_action(i4, "close_err", 0);
+            tick();
+            std::printf("errors: early %d, all shown %d, blocked %d, one left blocks %d, cleared %d (broken glass still %lld)\n",
+                        shown_early, all, blocked, still, ints["va_err_any"] == 0, (long long)ints["va_fail"]);
+            ok = ok && all == 8 && blocked && still && ints["va_err_any"] == 0 && ints["va_fail"] == 1;
+        }
         ext->on_action(i4, "reset", 0);
         tick();
         ok = ok && ints["va_result"] == 0;
