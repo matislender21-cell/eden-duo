@@ -86,6 +86,10 @@ int main() {
                 texts["pr.picked"] != "PICKED";
     ext->on_action(inst, "mode", 0);
     texts.clear(); mod->tick(inst, &host);
+    std::printf("drinks mode: %s\n", texts["pr.mode"].c_str());
+    failures += texts["pr.mode"] != "showing: drinks (35x53)";
+    ext->on_action(inst, "mode", 0);
+    texts.clear(); mod->tick(inst, &host);
     std::printf("all mode: %s %s\n", texts["pr.mode"].c_str(), texts["pr.pos"].c_str());
     failures += texts["pr.pos"] != "1 / 4";
     mod->destroy(inst);

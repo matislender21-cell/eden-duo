@@ -23,8 +23,9 @@
 //   va_angle    shaker tilt in degrees (+ = clockwise) and va_sway its sideways sway in the
 //               artist's GIF pixels: her swing (0 6 20 44 20 6 0 -13 -27 -45 -27 -13, 140 ms
 //               a step) while mixing, a hard +-45 rattle once blended, 0 otherwise
-// Images: "module:gm:<sprite name>[:<frame>[:<scale>]]" -> that sprite from the player's own
-// game data (never shipped), scaled by an integer factor with nearest neighbour.
+// Images: "module:gm:<sprite name>[:<frame>[:<scale>[:swaprg]]]" -> that sprite from the player's
+// own game data (never shipped), scaled by an integer factor with nearest neighbour; "swaprg"
+// swaps its red and green channels (the green Serve button made from the game's Mix button).
 //   va_success_frame  0..26 frame of the artist's Success popup while va_done
 //   va_fill     0..100: while shaking, time towards the blend point (5 s); full once let go
 //   va_blended  1 when the drink is (or will be) blended; va_done 1 mixed / 2 blended after
@@ -529,6 +530,9 @@ struct Module {
             picked[parts[0]] = e ? e->name : std::string("(no match)");
         }
         if (!gm.Frame(parts[0], frame, scale, w, ht, px)) return false;
+        // optional 4th part: a recolour made on the device (nothing extra ships)
+        if (parts.size() > 3 && parts[3] == "swaprg") // red <-> green: the pink Mix button turns green
+            for (size_t i = 0; i + 3 < px.size(); i += 4) std::swap(px[i], px[i + 1]);
         sink(receiver, u32(w), u32(ht), px.data(), px.size());
         return true;
     }

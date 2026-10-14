@@ -165,7 +165,7 @@ struct Probe {
     std::atomic<bool> ready{false};
 
     // browser
-    bool matches_only = true;
+    int filter = 0; // 0 likely names, 1 drinks (35x53 sprites), 2 everything
     std::vector<size_t> matches;
     size_t pos = 0, frame = 0;
     std::vector<size_t> picked; // entry indexes the player marked as "used in my art"
@@ -386,8 +386,12 @@ struct Probe {
     void Rebuild() {
         matches.clear();
         for (size_t i = 0; i < d.entries.size(); ++i) {
-            if (!matches_only) {
+            if (filter == 2) {
                 matches.push_back(i);
+                continue;
+            }
+            if (filter == 1) {
+                if (d.entries[i].w == 35 && d.entries[i].h == 53) matches.push_back(i);
                 continue;
             }
             const std::string n = Lower(d.entries[i].name);
@@ -443,7 +447,7 @@ struct Probe {
             return true;
         }
         if (a == "mode") {
-            matches_only = !matches_only;
+            filter = (filter + 1) % 3;
             Rebuild();
             return true;
         }
@@ -496,7 +500,7 @@ struct Probe {
         }
         pt("pr.pick_page", "page " + std::to_string(page + 1) + " of " + std::to_string(pages));
         pt("pr.later", later_mode ? "LATER: ON (picks are for future ideas)" : "LATER: OFF (picks are for now)");
-        pt("pr.mode", matches_only ? "showing: likely names" : "showing: everything");
+        pt("pr.mode", filter == 0 ? "showing: likely names" : filter == 1 ? "showing: drinks (35x53)" : "showing: everything");
         if (!ready || matches.empty()) {
             pt("pr.src", "");
             pt("pr.name", "");

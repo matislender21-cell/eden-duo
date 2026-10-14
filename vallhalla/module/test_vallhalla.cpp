@@ -293,6 +293,10 @@ int main() {
         const bool f1 = ext->load_image(i3, &h3, "module:gm:spr_shaker:1:1", &got, sink) && got.w == 16 && got.px[0] == 200;
         const bool bg = ext->load_image(i3, &h3, "module:gm:bg_doodle", &got, sink) && got.w == 64 && got.h == 48;
         const bool miss = !ext->load_image(i3, &h3, "module:gm:no_such_sprite", &got, sink);
+        const bool sw = ext->load_image(i3, &h3, "module:gm:spr_shaker:1:1:swaprg", &got, sink) && got.px[0] == 10 &&
+                        got.px[1] == 200;
+        std::printf("red/green swap: %s\n", sw ? "ok" : "FAIL");
+        failures += !sw;
         std::printf("frame 1 %s, background %s, unknown name refused %s\n", f1 ? "ok" : "FAIL", bg ? "ok" : "FAIL", miss ? "ok" : "FAIL");
         failures += !all || !f1 || !bg || !miss;
         mod->destroy(i3);
