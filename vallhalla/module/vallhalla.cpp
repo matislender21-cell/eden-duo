@@ -50,6 +50,7 @@
 #include <cstring>
 #include <exception>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -93,7 +94,7 @@ constexpr u64 kZrGap = 14;               // ticks between two of our ZR presses
 
 // VA-11 Hall-A drink recipes (names and amounts only). Order: Adelhyde, Bronson Extract,
 // Powdered Delta, Flanergide, Karmotrine (-1 = optional: any amount). Checked against the
-// community wiki on 14 Oct 2026; Sunshine Cloud's "aged" is unconfirmed.
+// community wiki on 14 Oct 2026; Sunshine Cloud (on the rocks, blended, not aged) confirmed in game.
 struct Recipe {
     const char* name;
     int amt[5];
@@ -122,7 +123,7 @@ constexpr Recipe kRecipes[] = {
     {"Pile Driver", {0, 3, 0, 3, 4}, false, false, false},
     {"Sparkle Star", {2, 0, 1, 0, -1}, false, true, false},
     {"Sugar Rush", {2, 0, 1, 0, -1}, false, false, false},
-    {"Sunshine Cloud", {2, 2, 0, 0, -1}, true, true, true},
+    {"Sunshine Cloud", {2, 2, 0, 0, -1}, true, false, true},
     {"Suplex", {0, 4, 0, 3, 3}, true, false, false},
     {"Zen Star", {4, 4, 4, 4, 4}, true, false, false},
 };
@@ -474,6 +475,8 @@ struct Module {
     // ---- game art (asset worker) ----
     std::mutex gm_mutex;
     vallhalla::GmReader gm;
+    mutable std::mutex picked_mutex;
+    std::map<std::string, std::string> picked; // "~query" -> the sprite it found (test readout)
 
     bool LoadImage(const EdenDsmodHostApi* h, const char* key, void* receiver, EdenDsmodImageSink sink) {
         std::string k = key;
@@ -495,6 +498,11 @@ struct Module {
         if (!gm.Open(h ? *h : host)) return false;
         int w = 0, ht = 0;
         std::vector<u8> px;
+        if (!parts[0].empty() && parts[0][0] == '~') {
+            const auto* e = gm.Find(parts[0]);
+            std::scoped_lock l2{picked_mutex};
+            picked[parts[0]] = e ? e->name : std::string("(no match)");
+        }
         if (!gm.Frame(parts[0], frame, scale, w, ht, px)) return false;
         sink(receiver, u32(w), u32(ht), px.data(), px.size());
         return true;
@@ -580,10 +588,15 @@ struct Module {
         h->publish_i64(h->userdata, "va_ok", result == 1 ? 1 : 0);
         h->publish_i64(h->userdata, "va_fail", result == 2 ? 1 : 0);
         if (result == 1) {
-            std::string key = std::string("module:gm:~") + kRecipes[drink].name + ":0:4";
+            std::string key = std::string("module:gm:~") + kRecipes[drink].name + "@35x53:0:4";
             h->publish_text(h->userdata, "va_drink_src", key.c_str());
             h->publish_text(h->userdata, "va_drink_name",
                             (std::string(kRecipes[drink].name) + (big ? " (Big)" : "")).c_str());
+            std::string q = std::string("~") + kRecipes[drink].name + "@35x53";
+            std::scoped_lock l2{picked_mutex};
+            const auto it = picked.find(q);
+            h->publish_text(h->userdata, "va_drink_sprite",
+                            ("sprite: " + (it == picked.end() ? std::string("loading...") : it->second)).c_str());
         } else if (result == 2) {
             h->publish_text(h->userdata, "va_drink_src", "module:gm:glitchbottle:0:4");
             h->publish_text(h->userdata, "va_drink_name", "Failed drink");

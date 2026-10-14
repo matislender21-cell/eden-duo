@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -74,18 +75,34 @@ public:
         return true;
     }
 
-    // Exact name (ignoring case and punctuation). A name starting with '~' instead picks the
-    // shortest sprite whose name contains the rest ("~sugarrush" finds "sugar_rush_spr").
+    // Exact name (ignoring case and punctuation). A name starting with '~' instead searches the
+    // names that contain the rest ("~sugar rush" finds "sugar_rush_spr"); an optional
+    // "@WxH" suffix ("~sugar rush@35x53") prefers sprites of that size. Ranking: has frames,
+    // then the size, then a name ending in "spr", then the shortest name.
     const Entry* Find(const std::string& name) const {
         if (!name.empty() && name[0] == '~') {
-            const std::string want = Key(name.substr(1));
+            std::string q = name.substr(1);
+            uint32_t pw = 0, ph = 0;
+            if (const size_t at = q.rfind('@'); at != std::string::npos) {
+                std::sscanf(q.c_str() + at + 1, "%ux%u", &pw, &ph);
+                q = q.substr(0, at);
+            }
+            const std::string want = Key(q);
             const Entry* best = nullptr;
-            size_t best_len = SIZE_MAX;
-            for (const auto& [k, i] : by_key_)
-                if (!want.empty() && k.find(want) != std::string::npos && k.size() < best_len) {
-                    best = &entries_[i];
-                    best_len = k.size();
+            long best_score = -1;
+            for (const auto& [k, i] : by_key_) {
+                if (want.empty() || k.find(want) == std::string::npos) continue;
+                const Entry& e = entries_[i];
+                long score = 0;
+                if (!e.tpags.empty()) score += 1000000;
+                if (pw && e.w == pw && e.h == ph) score += 100000;
+                if (k.size() >= 3 && k.compare(k.size() - 3, 3, "spr") == 0) score += 10000;
+                score += 1000 - long(std::min<size_t>(k.size(), 999));
+                if (score > best_score) {
+                    best = &e;
+                    best_score = score;
                 }
+            }
             return best;
         }
         const auto it = by_key_.find(Key(name));

@@ -334,7 +334,7 @@ int main() {
         std::printf("Sugar Rush (2 A, 1 D, mixed):\n");
         mix({0, 0, 2}, false, false, 60);
         bool ok = ints["va_result"] == 1 && texts["va_drink_name"] == "Sugar Rush" &&
-                  texts["va_drink_src"] == "module:gm:~Sugar Rush:0:4";
+                  texts["va_drink_src"] == "module:gm:~Sugar Rush@35x53:0:4";
         std::printf("Big Sugar Rush with Karmotrine (next pour starts a new drink):\n");
         mix({0, 0, 0, 0, 2, 2, 4, 4, 4}, false, false, 60);
         ok = ok && ints["va_result"] == 1 && texts["va_drink_name"] == "Sugar Rush (Big)";
