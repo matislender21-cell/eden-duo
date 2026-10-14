@@ -169,6 +169,9 @@ struct Probe {
     std::vector<size_t> matches;
     size_t pos = 0, frame = 0;
     std::vector<size_t> picked; // entry indexes the player marked as "used in my art"
+    std::vector<bool> later;    // per pick: marked for a future mechanic
+    bool later_mode = false;    // new picks are "later" picks
+    size_t pick_page = 0;       // 40 picks per page on the picks screen
 
     // image worker state (asset worker thread only, plus the mutex)
     std::mutex tex_mutex;
@@ -414,13 +417,29 @@ struct Probe {
         if (a == "pick" && !matches.empty()) {
             const size_t idx = matches[pos];
             auto it = std::find(picked.begin(), picked.end(), idx);
-            if (it == picked.end()) picked.push_back(idx);
-            else picked.erase(it);
+            if (it == picked.end()) {
+                picked.push_back(idx);
+                later.push_back(later_mode);
+            } else {
+                later.erase(later.begin() + (it - picked.begin()));
+                picked.erase(it);
+            }
             LogPicks();
             return true;
         }
         if (a == "clear_picks") {
             picked.clear();
+            later.clear();
+            pick_page = 0;
+            return true;
+        }
+        if (a == "later") {
+            later_mode = !later_mode;
+            return true;
+        }
+        if (a == "pick_page") {
+            const size_t pages = std::max<size_t>(1, (picked.size() + 39) / 40);
+            pick_page = (pick_page + 1) % pages;
             return true;
         }
         if (a == "mode") {
@@ -445,7 +464,8 @@ struct Probe {
 
     void LogPicks() const {
         Log("picks (" + std::to_string(picked.size()) + "):");
-        for (size_t i : picked) Log("  pick " + Describe(i));
+        for (size_t k = 0; k < picked.size(); ++k)
+            Log(std::string(later[k] ? "  later " : "  pick ") + Describe(picked[k]));
     }
 
     void LogCatalog() const {
@@ -465,11 +485,17 @@ struct Probe {
         pt("pr.status", status);
         pi("pr.ready", ready ? 1 : 0);
         pi("pr.picks", s64(picked.size()));
+        const size_t pages = std::max<size_t>(1, (picked.size() + 39) / 40);
+        const size_t page = std::min(pick_page, pages - 1);
         for (size_t k = 0; k < 40; ++k) {
             char n[16];
             std::snprintf(n, sizeof n, "pr.pick%zu", k);
-            pt(n, k < picked.size() ? std::to_string(k + 1) + ". " + Describe(picked[k]) : "");
+            const size_t j = page * 40 + k;
+            pt(n, j < picked.size() ? std::to_string(j + 1) + ". " + (later[j] ? "[later] " : "") + Describe(picked[j])
+                                    : "");
         }
+        pt("pr.pick_page", "page " + std::to_string(page + 1) + " of " + std::to_string(pages));
+        pt("pr.later", later_mode ? "LATER: ON (picks are for future ideas)" : "LATER: OFF (picks are for now)");
         pt("pr.mode", matches_only ? "showing: likely names" : "showing: everything");
         if (!ready || matches.empty()) {
             pt("pr.src", "");

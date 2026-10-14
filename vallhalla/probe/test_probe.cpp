@@ -168,11 +168,12 @@ int main() {
     failures += !ok || texts["pr.name"] != "bg_doodle" || got.w != 64;
     ext->on_action(inst, "pick", 0);           // bg_doodle
     ext->on_action(inst, "step", -2);
-    ext->on_action(inst, "pick", 0);           // spr_shaker
+    ext->on_action(inst, "later", 0);
+    ext->on_action(inst, "pick", 0);           // spr_shaker, as a later pick
     texts.clear(); mod->tick(inst, &host);
     std::printf("picks: %lld | %s | %s | %s\n", (long long)ints["pr.picks"], texts["pr.pick0"].c_str(),
                 texts["pr.pick1"].c_str(), texts["pr.picked"].c_str());
-    failures += ints["pr.picks"] != 2 || texts["pr.pick1"].find("spr_shaker  16x32  x2") == std::string::npos ||
+    failures += ints["pr.picks"] != 2 || texts["pr.pick1"].find("[later] spr_shaker  16x32  x2") == std::string::npos ||
                 texts["pr.picked"] != "PICKED";
     ext->on_action(inst, "mode", 0);
     texts.clear(); mod->tick(inst, &host);
