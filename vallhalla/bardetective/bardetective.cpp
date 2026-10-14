@@ -30,6 +30,8 @@
 // slots that changed, with their old and new values (bottled items, the drink result...).
 // 0.0.5: only real numbers count (0, or between 1e-6 and 1e9 in size): the 8-byte slots
 // that hold pointers or flags read as tiny garbage doubles and are skipped. 28 shown.
+// 0.0.6: live slots S+0x700..S+0x8F0 every 0x10 (0x730 went 0 -> 500 on a failed drink,
+// 0x860 0 -> 1 when A Fedora went in, 0x800 = a drink is ready: after a mix or a bottled item).
 
 #include <algorithm>
 #include <cmath>
@@ -378,7 +380,9 @@ struct BarDetective {
         case 0x8A0: return " Karmotrine";
         case 0x990: return " total";
         case 0x880: return " mixing";
-        case 0x800: return " not mixing";
+        case 0x800: return " drink ready";
+        case 0x860: return " Fedora?";
+        case 0x730: return " result?";
         default: return "";
         }
     }
@@ -467,6 +471,17 @@ struct BarDetective {
             char b[200];
             std::snprintf(b, sizeof b, "%s   (%zu changed)", st, ch_found.size());
             pt("bd.cstatus", b);
+            for (int k = 0; k < 32; ++k) { // live slots
+                const u64 off = 0x700 + u64(k) * 0x10;
+                bool ok;
+                const double d = SlotAt(s64(off), ok);
+                char v[96];
+                if (ok && Nice(d)) std::snprintf(v, sizeof v, "S+0x%llX = %g%s", (unsigned long long)off, d, Known(off));
+                else std::snprintf(v, sizeof v, "S+0x%llX   -", (unsigned long long)off);
+                char n[16];
+                std::snprintf(n, sizeof n, "bd.l%d", k);
+                pt(n, v);
+            }
             for (size_t k = 0; k < 28; ++k) {
                 char n[16];
                 std::snprintf(n, sizeof n, "bd.c%zu", k);
