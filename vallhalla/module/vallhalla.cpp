@@ -41,8 +41,8 @@
 //   reset       the player pressed Reset: empty the bar and the shaker
 //   pour        one unit poured (argument 0..4: Adelhyde, Bronson, Delta, Flanergide, Karmotrine)
 //   ice_toggle / age_toggle   Ice / Age toggled (pressing X / Y)
-//   close_err   the player tapped error window <argument> (0..7) away
-// A failed drink pops up 8 error windows (va_err0..7 visible, va_errf0..7 frame: 0 clean,
+//   close_err   the player tapped error window <argument> (0..3) away
+// A failed drink pops up 4 error windows (va_err0..3 visible, va_errf0..3 frame: 0 clean,
 // 1/2 glitch); va_err_any blocks the bar until all are closed.
 // After a shake-mix: va_result 1 (a recipe: va_ok) or 2 (failed: va_fail), va_drink_src (the
 // drink's game sprite, or the broken glass) and va_drink_name, until served or Reset.
@@ -94,7 +94,7 @@ constexpr u64 kBlendTicks = 300;         // the game blends a drink mixed for 5 
 constexpr int kReversalTicks = 2;        // a direction change counts after this many moving ticks
 constexpr u64 kShakeWindow = 50;         // two reversals within ~0.8 s = shaking
 constexpr u64 kZrGap = 14;               // ticks between two of our ZR presses
-constexpr int kErrN = 8;                 // error windows spawned by a failed drink
+constexpr int kErrN = 4;                 // error windows spawned by a failed drink
 constexpr u64 kErrStep = 7;              // ~0.12 s between two windows popping up
 
 // VA-11 Hall-A drink recipes (names and amounts only). Order: Adelhyde, Bronson Extract,
