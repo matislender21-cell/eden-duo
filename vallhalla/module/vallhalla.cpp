@@ -45,6 +45,7 @@
 //   close_err   the player tapped error window <argument> (0..3) away
 // A failed drink pops up 4 error windows (va_err0..3 visible, va_errf0..3 frame: 0 clean,
 // 1/2 glitch); va_err_any blocks the bar until all are closed.
+// va_grab 1 = the shaker can be picked up (something poured); va_shaker_idle 1 = empty shaker.
 // After a shake-mix: va_result 1 (a recipe: va_ok) or 2 (failed: va_fail), va_drink_src (the
 // drink's game sprite, or the broken glass) and va_drink_name, until served or Reset.
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
@@ -360,7 +361,7 @@ struct Module {
             ++run;
         }
         const bool shaking = rev_ticks[0] != 0 && ticks - rev_ticks[0] <= kShakeWindow;
-        if (shaking && !started) { // start the mix
+        if (shaking && !started && HasPour()) { // start the mix (never with an empty shaker)
             started = true;
             mix_ticks = 0;
             done = 0;
@@ -381,6 +382,12 @@ struct Module {
     }
     bool ErrAny() const {
         return result == 2 && err_closed != (1u << kErrN) - 1;
+    }
+
+    bool HasPour() const {
+        for (int c : counts)
+            if (c > 0) return true;
+        return false;
     }
 
     void NewDrink() {
@@ -618,6 +625,9 @@ struct Module {
         h->publish_i64(h->userdata, "va_blended", done == 2 || (started && mix_ticks >= kBlendTicks) ? 1 : 0);
         h->publish_i64(h->userdata, "va_done", done);
         h->publish_i64(h->userdata, "va_result", result);
+        // the shaker can be grabbed only with something in it (and no finished drink on show)
+        h->publish_i64(h->userdata, "va_grab", result == 0 && (HasPour() || started) ? 1 : 0);
+        h->publish_i64(h->userdata, "va_shaker_idle", result == 0 && !HasPour() && !started ? 1 : 0);
         h->publish_i64(h->userdata, "va_ok", result == 1 ? 1 : 0);
         h->publish_i64(h->userdata, "va_fail", result == 2 ? 1 : 0);
         h->publish_i64(h->userdata, "va_err_any", ErrAny() ? 1 : 0);

@@ -178,6 +178,7 @@ int main() {
     std::printf("grab without shaking: ZR presses %d (want 0)\n", zr);
     failures += zr != 0;
     int seen_frames = 0;
+    ext->on_action(inst, "pour", 0); // something in the shaker
     for (int i = 0; i < 40; ++i) { // shake left-right, 40 px each way
         const int x = 700 + ((i / 4) % 2 ? 40 : -40) * (i % 4) / 4;
         frame(at(x, 650));
@@ -228,6 +229,7 @@ int main() {
     std::printf("Reset: fill %lld done %lld\n", (long long)ints["va_fill"], (long long)ints["va_done"]);
     failures += ints["va_fill"] != 0 || ints["va_done"] != 0;
     last_x = -1;
+    ext->on_action(inst, "pour", 0); // something in the shaker
     for (int i = 0; i < 12; ++i) { // a tiny shake, then let go at once
         const int x = 700 + ((i / 4) % 2 ? 40 : -40) * (i % 4) / 4;
         frame(at(x, 650));
@@ -240,6 +242,7 @@ int main() {
                 (long long)ints["va_blended"]);
     failures += mid_fill > 10 || ints["va_fill"] != 100 || ints["va_done"] != 1 || ints["va_blended"] != 0;
     zr -= 2; // that mix pressed ZR twice more
+    ext->on_action(inst, "pour", 0); // something in the shaker
     for (int i = 0; i < 40; ++i) { // shake again, then the drag is cancelled (no shake_end)
         const int x = 700 + ((i / 4) % 2 ? 40 : -40) * (i % 4) / 4;
         frame(at(x, 650));
@@ -335,6 +338,20 @@ int main() {
             std::printf("  -> result %lld %-22s %s\n", (long long)ints["va_result"], texts["va_drink_name"].c_str(),
                         texts["va_drink_src"].c_str());
         };
+        {   // an empty shaker cannot be grabbed, and shaking it does nothing
+            tick();
+            const bool locked = ints["va_grab"] == 0 && ints["va_shaker_idle"] == 1;
+            for (int i = 0; i < 60; ++i) { tick(); ext->on_action(i4, "shake", (i / 3) % 2 ? 1 : 5); }
+            ext->on_action(i4, "shake_end", 0);
+            tick();
+            const bool nothing = ints["va_result"] == 0 && ints["va_started"] == 0;
+            ext->on_action(i4, "pour", 0);
+            tick();
+            const bool open = ints["va_grab"] == 1 && ints["va_shaker_idle"] == 0;
+            ext->on_action(i4, "reset", 0);
+            std::printf("empty shaker: locked %d, shaking it does nothing %d, grabbable after a pour %d\n", locked, nothing, open);
+            failures += !locked || !nothing || !open;
+        }
         std::printf("Sugar Rush (2 A, 1 D, mixed):\n");
         mix({0, 0, 2}, false, false, 60);
         bool ok = ints["va_result"] == 1 && texts["va_drink_name"] == "Sugar Rush" &&
