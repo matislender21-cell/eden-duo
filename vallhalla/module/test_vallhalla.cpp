@@ -404,6 +404,53 @@ int main() {
         failures += !empty_refused || !rocking || !still || !stopped || !mixed || !served;
         mod->destroy(ib);
     }
+    // ---- ZR in the game itself: the bottom screen follows ----
+    {
+        const uint64_t x = kHeap + 0x340230;
+        Triple(x, 0, 1, 1);
+        EdenDsmodHostApi hz = host;
+        hz.get_heap_begin = HeapBeginLow;
+        void* iz = mod->create(&hz, "{}");
+        int zrs = 0;
+        auto tick = [&]() {
+            ints.clear();
+            mod->tick(iz, &hz);
+            if (ints["va_zr_req"]) { ++zrs; ext->on_action(iz, "zr_done", 0); }
+        };
+        auto game_mix = [&](int on) { Put(x + 0x880, on); Put(x + 0x800, 1 - on); };
+        const uint64_t off[5] = {0x960, 0x930, 0x900, 0x8D0, 0x8A0};
+        for (auto o : off) Put(x + o, 0);
+        Put(x + 0x960, 2); Put(x + 0x900, 1); Put(x + 0x990, 3); Put(x + 0x9F0, 0); Put(x + 0x9C0, 0);
+        game_mix(0);
+        for (int i = 0; i < 60; ++i) tick();
+        game_mix(1); // ZR on the controller
+        for (int i = 0; i < 3; ++i) tick();
+        const bool follows = ints["va_started"] == 1 && ints["va_btn_mixing"] == 1 && zrs == 0;
+        for (int i = 0; i < 320; ++i) tick();
+        const bool blends = ints["va_blended"] == 1;
+        game_mix(0); // ZR again
+        for (int i = 0; i < 3; ++i) tick();
+        const bool ends = ints["va_started"] == 0 && ints["va_done"] == 2 && ints["va_result"] == 2 && zrs == 0;
+        // our own Mix button: the game takes a moment to start; that is not a stop
+        Put(x + 0x960, 0); Put(x + 0x900, 0); Put(x + 0x990, 0); // ZL in the game
+        for (int i = 0; i < 3; ++i) tick();
+        Put(x + 0x960, 2); Put(x + 0x900, 1); Put(x + 0x990, 3);
+        for (int i = 0; i < 3; ++i) tick();
+        ext->on_action(iz, "mix_btn", 0);
+        for (int i = 0; i < 20; ++i) tick(); // game still shows not mixing
+        const bool lag_ok = ints["va_started"] == 1;
+        game_mix(1);
+        for (int i = 0; i < 60; ++i) tick();
+        ext->on_action(iz, "mix_btn", 0); // Stop
+        for (int i = 0; i < 10; ++i) tick(); // game still mixing a moment
+        game_mix(0);
+        for (int i = 0; i < 60; ++i) tick();
+        const bool own = ints["va_started"] == 0 && ints["va_done"] == 1 && ints["va_result"] == 1 && zrs == 2;
+        std::printf("ZR in the game: followed %d, blends %d, ends without our ZR %d, own Mix not cut short %d, own Stop once %d\n",
+                    follows, blends, ends, lag_ok, own);
+        failures += !follows || !blends || !ends || !lag_ok || !own;
+        mod->destroy(iz);
+    }
     // ---- shaker physics: leans the way the finger moves, springs back ----
     {
         void* ip = mod->create(&host, "{}");

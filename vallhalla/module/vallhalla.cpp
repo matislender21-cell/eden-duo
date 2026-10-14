@@ -107,6 +107,10 @@ constexpr u64 kZrGap = 14;               // ticks between two of our ZR presses
 // Delta, Flanergide, Karmotrine. 0x990 holds the total, used to check the read.
 constexpr u64 kGameCountOff[5] = {0x960, 0x930, 0x900, 0x8D0, 0x8A0};
 constexpr u64 kGameTotalOff = 0x990, kGameAgedOff = 0x9C0, kGameIceOff = 0x9F0;
+// Whether the game is mixing (bar detective mixing finder, 14 Oct): +0x880 reads 1 while mixing
+// and +0x800 reads 1 while not; trusted only while they disagree.
+constexpr u64 kGameMixingOff = 0x880, kGameIdleOff = 0x800;
+constexpr u64 kGameMixGrace = 45; // ticks the game may take to follow our own ZR press
 constexpr int kErrN = 4;                 // error windows spawned by a failed drink
 constexpr u64 kErrStep = 7;              // ~0.12 s between two windows popping up
 
@@ -220,7 +224,8 @@ struct Module {
     int counts[5] = {0, 0, 0, 0, 0}; // units in the shaker (the game's own when readable)
     u64 cur_x = 0;          // the trusted switch (0 = none)
     bool game_ok = false;   // the shaker's contents were read from the game this tick
-    bool full_after = false; // the game still held the finished drink's contents (see Tick)
+    bool full_after = false;
+    int game_mixing = -1;   // the game's own mixing state: -1 unknown, 0 / 1 // the game still held the finished drink's contents (see Tick)
     bool ice = false, aged = false;  // Ice / Age toggled on for this drink
     int result = 0;         // 0 nothing yet, 1 a recipe (success), 2 failed
     int drink = -1;         // kRecipes index when result == 1
@@ -360,6 +365,14 @@ struct Module {
         cur_x = best ? best->x : 0;
     }
 
+    int ReadGameMixing() const {
+        double m, i;
+        if (!cur_x || !ReadF64(cur_x + kGameMixingOff, m) || !ReadF64(cur_x + kGameIdleOff, i)) return -1;
+        if (m == 1 && i == 0) return 1;
+        if (m == 0 && i == 1) return 0;
+        return -1;
+    }
+
     // The game's own shaker contents, whatever poured them (bottom screen, top screen,
     // controller). Trusted only when every value is a whole number in range and the counts add
     // up to the game's total; otherwise the bottom screen's own counting stays in charge.
@@ -461,7 +474,7 @@ struct Module {
         for (int& c : counts) c = 0;
     }
 
-    void ShakeEnd(bool button = false) {
+    void ShakeEnd(bool button = false, bool press_zr = true) {
         has_pos = false;
         if (started && by_button && !button) return; // a Mix-button mix ends with Mix
         if (started) {
@@ -473,7 +486,7 @@ struct Module {
             err_tick = ticks;
             err_closed = 0;
             done_tick = ticks;
-            ++zr_pending;
+            if (press_zr) ++zr_pending;
             if (mode < 0) manual = true; // like Mix: while unsure, the overlay comes back
         }
     }
@@ -573,6 +586,20 @@ struct Module {
         const bool before = Overlay();
         Track();
         game_ok = ReadGame();
+        game_mixing = ReadGameMixing();
+        // Mixing started or stopped in the game itself (ZR on the controller or the top screen):
+        // the bottom screen follows, the shaker shaking on its own like a Mix-button mix. Our own
+        // ZR presses are given a moment to reach the game before its state counts.
+        if (game_mixing >= 0 && zr_pending == 0 && ticks > last_zr + kGameMixGrace) {
+            if (game_mixing == 1 && !started && result == 0) {
+                started = true;
+                by_button = true;
+                mix_ticks = 0;
+                done = 0;
+            } else if (game_mixing == 0 && started) {
+                ShakeEnd(true, false); // already stopped in the game: no ZR from us
+            }
+        }
         // Reset in the game itself (ZL, top screen) empties its shaker: a finished drink on the
         // bottom screen (SUCCESS, or the failed drink and its error windows) goes too. Only once
         // the game was seen still holding that drink, so a game that empties on its own at the
