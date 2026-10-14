@@ -107,6 +107,25 @@ int main() {
     ext->on_action(inst, "restart", 0);
     mod->tick(inst, &host);
     failures += ints["bd.step"] != 0;
+    {   // mixing finder: a flag at S+0x1230 (0 / 1) and a timer at S-0x1240 that counts while mixing
+        const uint64_t flag = seed + 0x1230, timer = seed - 0x1240;
+        double t = 0;
+        auto period = [&](int mixing) {
+            Put(flag, mixing);
+            failures += !ext->on_action(inst, "label", mixing);
+            for (int i = 0; i < 200; ++i) {
+                if (mixing) t += 1.0 / 60;
+                Put(timer, t);
+                Put(seed + 0x2000, double(rng() % 3)); // noise that moves all the time
+                mod->tick(inst, &host);
+            }
+            if (!mixing) t = 0;
+        };
+        for (int r = 0; r < 3; ++r) { period(0); period(1); }
+        std::printf("mixing finder: %s | %s | %s\n", texts["bd.mstatus"].c_str(), texts["bd.m0"].c_str(), texts["bd.m1"].c_str());
+        failures += texts["bd.m0"].find("S+0x1230  FLAG  not mixing 0 / mixing 1") != 0 ||
+                    texts["bd.m1"].find("S-0x1240  TIMER") != 0;
+    }
     std::printf("log lines: %zu\n", logs.size());
     failures += logs.size() < 7;
     mod->destroy(inst);

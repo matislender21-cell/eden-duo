@@ -18,6 +18,12 @@
 // Aging S+0x9C0, Ice S+0x9F0 (S = the switch): 0x30 apart. A watch grid now shows the live value
 // of every 0x30 slot from S+0x780 to S+0xC00, so Flanergide and Karmotrine can be spotted by
 // pouring them.
+//
+// 0.0.3: mixing finder. The player starts / stops mixing with ZR in the game and taps
+// NOT MIXING or MIXING right after; for ~2.5 s after each tap every double from S-0x4000 to
+// S+0x8000 is sampled under that label. Flags = slots steady within each label with a different
+// value per label (the same each time); timers = slots that move while mixing and stay put
+// while not mixing.
 
 #include <algorithm>
 #include <cmath>
@@ -77,6 +83,64 @@ struct BarDetective {
     std::vector<u8> mask; // bit i: still a guess for item i
     size_t filter_i = 0;
     u64 seed = 0;         // the talking/mixing switch, when found at its usual spot
+
+    // mixing finder
+    static constexpr s64 kMixFrom = -0x4000, kMixTo = 0x8000;
+    static constexpr size_t kMixN = size_t((kMixTo - kMixFrom) / 8);
+    struct MixSlot {
+        double v[2] = {0, 0};      // the value under each label (flags)
+        bool seen[2] = {false, false};
+        bool unstable[2] = {false, false};
+        double pfirst = 0;         // first value this period
+        int pid = -1;              // period it belongs to
+        bool moved[2] = {false, false}; // changed within one period
+    };
+    std::vector<MixSlot> mix;
+    int mix_label = -1, mix_period = 0, mix_periods[2] = {0, 0};
+    u64 mix_tap = 0, ticks = 0;
+    std::vector<std::pair<s64, int>> mix_found; // offset, kind (0 flag, 1 timer)
+
+    void MixSample() {
+        if (!seed || mix_label < 0 || ticks < mix_tap + 30 || ticks > mix_tap + 180) return;
+        if (mix.size() != kMixN) mix.assign(kMixN, MixSlot{});
+        const int L = mix_label;
+        for (size_t i = 0; i < kMixN; ++i) {
+            double d;
+            if (!ReadF64(u64(s64(seed) + kMixFrom + s64(i) * 8), d) || !std::isfinite(d)) continue;
+            MixSlot& m = mix[i];
+            if (!m.seen[L]) {
+                m.v[L] = d;
+                m.seen[L] = true;
+            } else if (d != m.v[L]) {
+                m.unstable[L] = true;
+            }
+            if (m.pid != mix_period) {
+                m.pid = mix_period;
+                m.pfirst = d;
+            } else if (d != m.pfirst) {
+                m.moved[L] = true;
+            }
+        }
+        if (ticks == mix_tap + 180) MixRank();
+    }
+
+    void MixRank() {
+        mix_found.clear();
+        for (size_t i = 0; i < mix.size(); ++i) {
+            const MixSlot& m = mix[i];
+            const s64 off = kMixFrom + s64(i) * 8;
+            if (m.seen[0] && m.seen[1] && !m.unstable[0] && !m.unstable[1] && m.v[0] != m.v[1])
+                mix_found.push_back({off, 0});
+        }
+        for (size_t i = 0; i < mix.size(); ++i) {
+            const MixSlot& m = mix[i];
+            if (m.moved[1] && !m.moved[0] && m.seen[0]) mix_found.push_back({kMixFrom + s64(i) * 8, 1});
+        }
+        std::stable_sort(mix_found.begin(), mix_found.end(), [](const auto& a, const auto& b) {
+            if (a.second != b.second) return a.second < b.second;
+            return (a.first < 0 ? -a.first : a.first) < (b.first < 0 ? -b.first : b.first);
+        });
+    }
     int count[kItems] = {};
     std::vector<u64> best[kItems];
 
@@ -235,7 +299,23 @@ struct BarDetective {
         }
     }
 
-    bool OnAction(const std::string& a) {
+    bool OnAction(const std::string& a, s64 arg = 0) {
+        if (a == "label" && (arg == 0 || arg == 1)) {
+            if (!seed) FindSeed();
+            if (!seed) return false;
+            mix_label = int(arg);
+            mix_tap = ticks;
+            ++mix_period;
+            ++mix_periods[arg];
+            return true;
+        }
+        if (a == "mix_clear") {
+            mix.clear();
+            mix_found.clear();
+            mix_label = -1;
+            mix_periods[0] = mix_periods[1] = 0;
+            return true;
+        }
         if (a == "snap") {
             if (job != Job::Idle || step >= kSteps) return false;
             if (!seed) FindSeed();
@@ -279,7 +359,9 @@ struct BarDetective {
     }
 
     void Tick() {
+        ++ticks;
         if (!seed) FindSeed();
+        MixSample();
         if (job == Job::Build) StepBuild();
         else if (job == Job::Filter) StepFilter();
     }
@@ -287,6 +369,36 @@ struct BarDetective {
     void Sample(const EdenDsmodHostApi* h) const {
         auto pt = [&](const char* n, const std::string& v) { h->publish_text(h->userdata, n, v.c_str()); };
         auto pi = [&](const char* n, s64 v) { h->publish_i64(h->userdata, n, v); };
+        {
+            char b[200];
+            const bool rec = mix_label >= 0 && ticks <= mix_tap + 180;
+            std::snprintf(b, sizeof b, "%s   taps: not mixing %d, mixing %d   found: %zu flags/timers",
+                          !seed ? "switch not found (be at the bar)"
+                          : rec ? (ticks < mix_tap + 30 ? "wait..." : (mix_label ? "RECORDING: MIXING" : "RECORDING: NOT MIXING"))
+                                : "ready",
+                          mix_periods[0], mix_periods[1], mix_found.size());
+            pt("bd.mstatus", b);
+            for (size_t k = 0; k < 12; ++k) {
+                char n[16];
+                std::snprintf(n, sizeof n, "bd.m%zu", k);
+                if (k >= mix_found.size()) {
+                    pt(n, "");
+                    continue;
+                }
+                const auto [off, kind] = mix_found[k];
+                const MixSlot& m = mix[size_t((off - kMixFrom) / 8)];
+                double now = 0;
+                const bool ok = ReadF64(u64(s64(seed) + off), now);
+                char v[160];
+                if (kind == 0)
+                    std::snprintf(v, sizeof v, "S%c0x%llX  FLAG  not mixing %g / mixing %g   now %g", off < 0 ? '-' : '+',
+                                  (unsigned long long)(off < 0 ? -off : off), m.v[0], m.v[1], ok ? now : -1.0);
+                else
+                    std::snprintf(v, sizeof v, "S%c0x%llX  TIMER   now %g", off < 0 ? '-' : '+',
+                                  (unsigned long long)(off < 0 ? -off : off), ok ? now : -1.0);
+                pt(n, v);
+            }
+        }
         pt("bd.status", status);
         pi("bd.step", step);
         pi("bd.busy", job != Job::Idle ? 1 : 0);
@@ -374,9 +486,9 @@ void TickFn(void* inst, const EdenDsmodHostApi* host) {
 
 void Configure(void*, const EdenDsmodHostExtensions*) {}
 
-EdenDsmodBool OnAction(void* inst, const char* action, int64_t) {
+EdenDsmodBool OnAction(void* inst, const char* action, int64_t argument) {
     try {
-        return static_cast<BarDetective*>(inst)->OnAction(action ? action : "") ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
+        return static_cast<BarDetective*>(inst)->OnAction(action ? action : "", argument) ? EDEN_DSMOD_TRUE : EDEN_DSMOD_FALSE;
     } catch (...) {
         return EDEN_DSMOD_FALSE;
     }
