@@ -35,7 +35,8 @@ uint64_t HeapBegin(void*) { return kHeap; }
 uint64_t HeapBeginLow(void*) { return kHeap - 0x97000000ull; }
 uint64_t HeapEnd(void*) { return kHeap + kHeapSize; }
 void PubI(void*, const char* n, int64_t v) { ints[n] = v; }
-void PubT(void*, const char*, const char*) {}
+std::map<std::string, std::string> texts;
+void PubT(void*, const char* n, const char* v) { texts[n] = v; }
 std::vector<uint8_t> gmfile;
 size_t ReadRomfs(void*, const char* path, uint64_t off, void* out, size_t n) {
     if (std::string(path) != "game.unx") return 0;
@@ -311,6 +312,57 @@ int main() {
         const bool bad = fe && !fe->decode_font(nullptr, (const uint8_t*)"junk", 4, &r, sink);
         std::printf("font metrics: %s, junk refused: %s\n", ok ? "ok" : "FAIL", bad ? "ok" : "FAIL");
         failures += !ok || !bad;
+    }
+    // ---- drink results ----
+    {
+        void* i4 = mod->create(&host, "{}");
+        auto tick = [&] { ints.clear(); texts.clear(); mod->tick(i4, &host); };
+        auto mix = [&](std::initializer_list<int> pours, bool ice, bool age, int shake_ticks) {
+            for (int k : pours) ext->on_action(i4, "pour", k);
+            if (ice) ext->on_action(i4, "ice_toggle", 0);
+            if (age) ext->on_action(i4, "age_toggle", 0);
+            for (int i = 0; i < shake_ticks; ++i) { // shake: alternate fast right / fast left
+                tick();
+                ext->on_action(i4, "shake", (i / 3) % 2 ? 1 : 5);
+                if (ints["va_zr_req"]) ext->on_action(i4, "zr_done", 0);
+            }
+            ext->on_action(i4, "shake_end", 0);
+            for (int i = 0; i < 20; ++i) { tick(); if (ints["va_zr_req"]) ext->on_action(i4, "zr_done", 0); }
+            std::printf("  -> result %lld %-22s %s\n", (long long)ints["va_result"], texts["va_drink_name"].c_str(),
+                        texts["va_drink_src"].c_str());
+        };
+        std::printf("Sugar Rush (2 A, 1 D, mixed):\n");
+        mix({0, 0, 2}, false, false, 60);
+        bool ok = ints["va_result"] == 1 && texts["va_drink_name"] == "Sugar Rush" &&
+                  texts["va_drink_src"] == "module:gm:~Sugar Rush:0:4";
+        std::printf("Big Sugar Rush with Karmotrine (next pour starts a new drink):\n");
+        mix({0, 0, 0, 0, 2, 2, 4, 4, 4}, false, false, 60);
+        ok = ok && ints["va_result"] == 1 && texts["va_drink_name"] == "Sugar Rush (Big)";
+        std::printf("wrong amounts:\n");
+        mix({0, 1, 2}, false, false, 60);
+        ok = ok && ints["va_result"] == 2 && ints["va_fail"] == 1 && texts["va_drink_src"] == "module:gm:glitchbottle:0:4";
+        std::printf("Moonblast mixed instead of blended (fails), then blended with ice (works):\n");
+        mix({0, 0, 0, 0, 0, 0, 2, 3, 4, 4}, true, false, 60);
+        ok = ok && ints["va_result"] == 2;
+        mix({0, 0, 0, 0, 0, 0, 2, 3, 4, 4}, true, false, 340);
+        ok = ok && ints["va_result"] == 1 && texts["va_drink_name"] == "Moonblast";
+        ext->on_action(i4, "reset", 0);
+        tick();
+        ok = ok && ints["va_result"] == 0;
+        std::printf("drinks: %s\n", ok ? "ok" : "FAIL");
+        failures += !ok;
+        mod->destroy(i4);
+    }
+    {   // the "~name" lookup used for drink sprites
+        EdenDsmodHostApi h5 = host;
+        h5.read_romfs = ReadRomfs;
+        void* i5 = mod->create(&h5, "{}");
+        struct Got { uint32_t w = 0; } got;
+        auto sink = [](void* r, uint32_t ww, uint32_t, const uint8_t*, size_t) { static_cast<Got*>(r)->w = ww; };
+        const bool ok = ext->load_image(i5, &h5, "module:gm:~Shaker:0:1", &got, sink) && got.w == 16;
+        std::printf("sprite by partial name: %s\n", ok ? "ok" : "FAIL");
+        failures += !ok;
+        mod->destroy(i5);
     }
     std::printf("%s\n", failures ? "VALLHALLA FAIL" : "VALLHALLA OK");
     return failures ? 1 : 0;

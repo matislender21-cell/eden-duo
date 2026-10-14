@@ -38,13 +38,18 @@
 //               left, still, right, fast right). Real back-and-forth motion starts the mix (ZR).
 //   shake_end   the shaker was let go: stops the mix (ZR again) if a shake started it
 //   zr_done     the package pressed ZR for us
-//   reset       the player pressed Reset: empty the bar
+//   reset       the player pressed Reset: empty the bar and the shaker
+//   pour        one unit poured (argument 0..4: Adelhyde, Bronson, Delta, Flanergide, Karmotrine)
+//   ice_toggle / age_toggle   Ice / Age toggled (pressing X / Y)
+// After a shake-mix: va_result 1 (a recipe: va_ok) or 2 (failed: va_fail), va_drink_src (the
+// drink's game sprite, or the broken glass) and va_drink_name, until served or Reset.
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -86,6 +91,64 @@ constexpr int kReversalTicks = 2;        // a direction change counts after this
 constexpr u64 kShakeWindow = 50;         // two reversals within ~0.8 s = shaking
 constexpr u64 kZrGap = 14;               // ticks between two of our ZR presses
 
+// VA-11 Hall-A drink recipes (names and amounts only). Order: Adelhyde, Bronson Extract,
+// Powdered Delta, Flanergide, Karmotrine (-1 = optional: any amount). Checked against the
+// community wiki on 14 Oct 2026; Sunshine Cloud's "aged" is unconfirmed.
+struct Recipe {
+    const char* name;
+    int amt[5];
+    bool ice, aged, blended;
+};
+constexpr Recipe kRecipes[] = {
+    {"Bad Touch", {0, 2, 2, 2, 4}, true, false, false},
+    {"Beer", {1, 2, 1, 2, 4}, false, false, false},
+    {"Bleeding Jane", {0, 1, 3, 3, 0}, false, false, true},
+    {"Bloom Light", {4, 0, 1, 2, 3}, true, true, false},
+    {"Blue Fairy", {4, 0, 0, 1, -1}, false, true, false},
+    {"Brandtini", {6, 0, 3, 0, 1}, false, true, false},
+    {"Cobalt Velvet", {2, 0, 0, 3, 5}, true, false, false},
+    {"Crevice Spike", {0, 0, 2, 4, -1}, false, false, true},
+    {"Flaming Moai", {1, 1, 2, 3, 5}, false, false, false},
+    {"Fluffy Dream", {3, 0, 3, 0, -1}, false, true, false},
+    {"Fringe Weaver", {1, 0, 0, 0, 9}, false, true, false},
+    {"Frothy Water", {1, 1, 1, 1, 0}, false, true, false},
+    {"Grizzly Temple", {3, 3, 3, 0, 1}, false, false, true},
+    {"Gut Punch", {0, 5, 0, 1, -1}, false, true, false},
+    {"Marsblast", {0, 6, 1, 4, 2}, false, false, true},
+    {"Mercuryblast", {1, 1, 3, 3, 2}, true, false, true},
+    {"Moonblast", {6, 0, 1, 1, 2}, true, false, true},
+    {"Piano Man", {2, 3, 5, 5, 3}, true, false, false},
+    {"Piano Woman", {5, 5, 2, 3, 3}, false, true, false},
+    {"Pile Driver", {0, 3, 0, 3, 4}, false, false, false},
+    {"Sparkle Star", {2, 0, 1, 0, -1}, false, true, false},
+    {"Sugar Rush", {2, 0, 1, 0, -1}, false, false, false},
+    {"Sunshine Cloud", {2, 2, 0, 0, -1}, true, true, true},
+    {"Suplex", {0, 4, 0, 3, 3}, true, false, false},
+    {"Zen Star", {4, 4, 4, 4, 4}, true, false, false},
+};
+constexpr int kShakerMax = 20; // units the shaker holds (a Big drink is every amount doubled)
+
+// -1 = failed, else index into kRecipes; *big set for a doubled drink.
+int MatchRecipe(const int c[5], bool ice, bool aged, bool blended, bool* big) {
+    int total = 0;
+    for (int i = 0; i < 5; ++i) total += c[i];
+    if (total == 0 || total > kShakerMax) return -1;
+    for (int r = 0; r < int(std::size(kRecipes)); ++r) {
+        const Recipe& R = kRecipes[r];
+        if (R.ice != ice || R.aged != aged || R.blended != blended) continue;
+        for (int size = 1; size <= 2; ++size) {
+            bool ok = true;
+            for (int i = 0; i < 5 && ok; ++i)
+                ok = R.amt[i] < 0 || c[i] == R.amt[i] * size;
+            if (ok) {
+                *big = size == 2;
+                return r;
+            }
+        }
+    }
+    return -1;
+}
+
 struct Cand {
     u64 x;
     u8 seen;     // bit 0: talking pattern seen, bit 1: mixing pattern seen
@@ -123,6 +186,11 @@ struct Module {
     bool started = false;   // we pressed ZR to start a mix that is still running
     u64 mix_ticks = 0;      // how long the current / last mix has run
     int done = 0;           // last shake-mix finished: 0 no, 1 mixed, 2 blended (Success!!)
+    int counts[5] = {0, 0, 0, 0, 0}; // units poured from the bottom screen this drink
+    bool ice = false, aged = false;  // Ice / Age toggled on for this drink
+    int result = 0;         // 0 nothing yet, 1 a recipe (success), 2 failed
+    int drink = -1;         // kRecipes index when result == 1
+    bool big = false;
     u64 done_tick = 0;      // when it finished (Success animation)
     int zr_pending = 0;     // ZR presses still to be made
     u64 last_zr = 0;        // tick of our last ZR press
@@ -291,11 +359,22 @@ struct Module {
         }
     }
 
+    void NewDrink() {
+        done = 0;
+        result = 0;
+        drink = -1;
+        big = false;
+        ice = aged = false;
+        for (int& c : counts) c = 0;
+    }
+
     void ShakeEnd() {
         has_pos = false;
         if (started) { // stop the mix: any mix is a finished drink, 5 s or more is blended
             started = false;
             done = mix_ticks >= kBlendTicks ? 2 : 1;
+            drink = MatchRecipe(counts, ice, aged, done == 2, &big);
+            result = drink >= 0 ? 1 : 2;
             done_tick = ticks;
             ++zr_pending;
             if (mode < 0) manual = true; // like Mix: while unsure, the overlay comes back
@@ -371,9 +450,9 @@ struct Module {
             if (mode < 0) manual = before; // lost track: keep what the player sees
             skip = false;
             emergency = false;
-            if (mode == 0 && !started) { // drink served: empty the bar
+            if (mode == 0 && !started) { // drink served: empty the bar, start a new drink
                 mix_ticks = 0;
-                done = 0;
+                NewDrink();
             }
             last_mode = mode;
         }
@@ -438,11 +517,29 @@ struct Module {
             ShakeEnd();
             return true;
         }
-        if (a == "reset") { // the player pressed Reset: empty the bar
+        if (a == "reset") { // the player pressed Reset: empty the bar and the shaker
             if (!started) {
                 mix_ticks = 0;
-                done = 0;
+                NewDrink();
             }
+            return true;
+        }
+        if (a == "pour" && arg >= 0 && arg < 5) { // one unit poured from the bottom screen
+            if (done) { // the last drink was finished: this pour starts a new one
+                mix_ticks = 0;
+                NewDrink();
+            }
+            ++counts[arg];
+            return true;
+        }
+        if (a == "ice_toggle") {
+            if (done) NewDrink();
+            ice = !ice;
+            return true;
+        }
+        if (a == "age_toggle") {
+            if (done) NewDrink();
+            aged = !aged;
             return true;
         }
         if (a == "zr_done") {
@@ -479,6 +576,18 @@ struct Module {
                        done ? 100 : s64(std::min<u64>(100, mix_ticks * 100 / kBlendTicks)));
         h->publish_i64(h->userdata, "va_blended", done == 2 || (started && mix_ticks >= kBlendTicks) ? 1 : 0);
         h->publish_i64(h->userdata, "va_done", done);
+        h->publish_i64(h->userdata, "va_result", result);
+        h->publish_i64(h->userdata, "va_ok", result == 1 ? 1 : 0);
+        h->publish_i64(h->userdata, "va_fail", result == 2 ? 1 : 0);
+        if (result == 1) {
+            std::string key = std::string("module:gm:~") + kRecipes[drink].name + ":0:4";
+            h->publish_text(h->userdata, "va_drink_src", key.c_str());
+            h->publish_text(h->userdata, "va_drink_name",
+                            (std::string(kRecipes[drink].name) + (big ? " (Big)" : "")).c_str());
+        } else if (result == 2) {
+            h->publish_text(h->userdata, "va_drink_src", "module:gm:glitchbottle:0:4");
+            h->publish_text(h->userdata, "va_drink_name", "Failed drink");
+        }
         h->publish_i64(h->userdata, "va_success_frame", SuccessFrame());
         const char* st = mode == 1 ? "auto: mixing"
                          : mode == 0 ? (skip ? "auto: talking (opened by hold)" : "auto: talking")

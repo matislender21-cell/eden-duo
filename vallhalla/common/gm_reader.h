@@ -74,7 +74,20 @@ public:
         return true;
     }
 
+    // Exact name (ignoring case and punctuation). A name starting with '~' instead picks the
+    // shortest sprite whose name contains the rest ("~sugarrush" finds "sugar_rush_spr").
     const Entry* Find(const std::string& name) const {
+        if (!name.empty() && name[0] == '~') {
+            const std::string want = Key(name.substr(1));
+            const Entry* best = nullptr;
+            size_t best_len = SIZE_MAX;
+            for (const auto& [k, i] : by_key_)
+                if (!want.empty() && k.find(want) != std::string::npos && k.size() < best_len) {
+                    best = &entries_[i];
+                    best_len = k.size();
+                }
+            return best;
+        }
         const auto it = by_key_.find(Key(name));
         return it == by_key_.end() ? nullptr : &entries_[it->second];
     }
