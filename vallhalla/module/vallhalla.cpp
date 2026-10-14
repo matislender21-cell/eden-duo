@@ -220,6 +220,7 @@ struct Module {
     int counts[5] = {0, 0, 0, 0, 0}; // units in the shaker (the game's own when readable)
     u64 cur_x = 0;          // the trusted switch (0 = none)
     bool game_ok = false;   // the shaker's contents were read from the game this tick
+    bool full_after = false; // the game still held the finished drink's contents (see Tick)
     bool ice = false, aged = false;  // Ice / Age toggled on for this drink
     int result = 0;         // 0 nothing yet, 1 a recipe (success), 2 failed
     int drink = -1;         // kRecipes index when result == 1
@@ -450,6 +451,7 @@ struct Module {
     }
 
     void NewDrink() {
+        full_after = false;
         done = 0;
         result = 0;
         drink = -1;
@@ -571,6 +573,19 @@ struct Module {
         const bool before = Overlay();
         Track();
         game_ok = ReadGame();
+        // Reset in the game itself (ZL, top screen) empties its shaker: a finished drink on the
+        // bottom screen (SUCCESS, or the failed drink and its error windows) goes too. Only once
+        // the game was seen still holding that drink, so a game that empties on its own at the
+        // end of a mix never wipes the result.
+        if (game_ok && result != 0 && !started) {
+            int total = 0;
+            for (int c : counts) total += c;
+            if (total > 0) full_after = true;
+            else if (full_after) {
+                mix_ticks = 0;
+                NewDrink();
+            }
+        }
         if (mode != last_mode) {
             if (mode < 0) manual = before; // lost track: keep what the player sees
             skip = false;

@@ -381,7 +381,14 @@ int main() {
         ext->on_action(ib, "mix_btn", 0);
         for (int i = 0; i < 30; ++i) tick();
         const bool stopped = ints["va_started"] == 0 && ints["va_done"] == 2 && zrs == 2 && ints["va_result"] == 2;
-        ext->on_action(ib, "reset", 0);
+        const bool errors_up = ints["va_err_any"] == 1 || ints["va_result"] == 2;
+        // Reset with ZL in the game: its shaker empties -> the failed drink and errors go
+        Put(x + 0x960, 0); Put(x + 0x900, 0); Put(x + 0x990, 0);
+        for (int i = 0; i < 3; ++i) tick();
+        const bool zl_reset = errors_up && ints["va_result"] == 0 && ints["va_err_any"] == 0 && ints["va_fail_lock"] == 0;
+        std::printf("ZL in the game clears the failed drink and its errors: %d\n", zl_reset);
+        failures += !zl_reset;
+        Put(x + 0x960, 2); Put(x + 0x900, 1); Put(x + 0x990, 3);
         for (int i = 0; i < 3; ++i) tick();
         ext->on_action(ib, "mix_btn", 0);
         for (int i = 0; i < 90; ++i) tick();
