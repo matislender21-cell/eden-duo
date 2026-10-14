@@ -46,6 +46,8 @@
 // A failed drink pops up 4 error windows (va_err0..3 visible, va_errf0..3 frame: 0 clean,
 // 1/2 glitch); va_err_any blocks the bar until all are closed.
 // va_grab 1 = the shaker can be picked up (something poured); va_shaker_idle 1 = empty shaker.
+// The game's shaker: va_game_ok 1 while the contents are read from the game (any input), then
+// va_cnt0..4 (Adelhyde, Bronson, Delta, Flanergide, Karmotrine), va_ice_on, va_age_on.
 // After a shake-mix: va_result 1 (a recipe: va_ok) or 2 (failed: va_fail), va_drink_src (the
 // drink's game sprite, or the broken glass) and va_drink_name, until served or Reset.
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
@@ -98,6 +100,11 @@ constexpr int kReversalTicks = 2;        // a direction change counts after this
 constexpr u64 kShakeWindow = 50;         // two reversals within ~0.8 s = shaking
 constexpr u64 kStopTicks = 40;           // no reversal for ~0.67 s = the player stopped shaking
 constexpr u64 kZrGap = 14;               // ticks between two of our ZR presses
+// The shaker's contents in the game (found with the bar detective, 14 Oct 2026): doubles at fixed
+// offsets from the talking/mixing switch (0x30 apart). Order of counts[]: Adelhyde, Bronson,
+// Delta, Flanergide, Karmotrine. 0x990 holds the total, used to check the read.
+constexpr u64 kGameCountOff[5] = {0x960, 0x930, 0x900, 0x8D0, 0x8A0};
+constexpr u64 kGameTotalOff = 0x990, kGameAgedOff = 0x9C0, kGameIceOff = 0x9F0;
 constexpr int kErrN = 4;                 // error windows spawned by a failed drink
 constexpr u64 kErrStep = 7;              // ~0.12 s between two windows popping up
 
@@ -207,7 +214,9 @@ struct Module {
     bool started = false;   // we pressed ZR to start a mix that is still running
     u64 mix_ticks = 0;      // how long the current / last mix has run
     int done = 0;           // last shake-mix finished: 0 no, 1 mixed, 2 blended (Success!!)
-    int counts[5] = {0, 0, 0, 0, 0}; // units poured from the bottom screen this drink
+    int counts[5] = {0, 0, 0, 0, 0}; // units in the shaker (the game's own when readable)
+    u64 cur_x = 0;          // the trusted switch (0 = none)
+    bool game_ok = false;   // the shaker's contents were read from the game this tick
     bool ice = false, aged = false;  // Ice / Age toggled on for this drink
     int result = 0;         // 0 nothing yet, 1 a recipe (success), 2 failed
     int drink = -1;         // kRecipes index when result == 1
@@ -344,6 +353,31 @@ struct Module {
         for (const auto& c : cands)
             if (c.seen == 3 && c.strikes == 0 && (!best || c.flipped > best->flipped)) best = &c;
         mode = best ? best->state : -1;
+        cur_x = best ? best->x : 0;
+    }
+
+    // The game's own shaker contents, whatever poured them (bottom screen, top screen,
+    // controller). Trusted only when every value is a whole number in range and the counts add
+    // up to the game's total; otherwise the bottom screen's own counting stays in charge.
+    bool ReadGame() {
+        if (!cur_x) return false;
+        double v[5], total, ice_d, aged_d;
+        for (int i = 0; i < 5; ++i)
+            if (!ReadF64(cur_x + kGameCountOff[i], v[i])) return false;
+        if (!ReadF64(cur_x + kGameTotalOff, total) || !ReadF64(cur_x + kGameIceOff, ice_d) ||
+            !ReadF64(cur_x + kGameAgedOff, aged_d))
+            return false;
+        const auto whole = [](double d, double hi) { return std::isfinite(d) && d >= 0 && d <= hi && d == std::floor(d); };
+        double sum = 0;
+        for (double d : v) {
+            if (!whole(d, 40)) return false;
+            sum += d;
+        }
+        if (!whole(total, 80) || sum != total || !whole(ice_d, 1) || !whole(aged_d, 1)) return false;
+        for (int i = 0; i < 5; ++i) counts[i] = int(v[i]);
+        ice = ice_d != 0;
+        aged = aged_d != 0;
+        return true;
     }
 
     bool Overlay() const {
@@ -518,6 +552,7 @@ struct Module {
         if (started && has_pos && ticks - rev_ticks[1] > kStopTicks) ShakeEnd();
         const bool before = Overlay();
         Track();
+        game_ok = ReadGame();
         if (mode != last_mode) {
             if (mode < 0) manual = before; // lost track: keep what the player sees
             skip = false;
@@ -690,6 +725,15 @@ struct Module {
         h->publish_i64(h->userdata, "va_result", result);
         // the shaker can be grabbed only with something in it (and no finished drink on show)
         h->publish_i64(h->userdata, "va_grab", result == 0 && (HasPour() || started) ? 1 : 0);
+        // the shaker's contents as the game has them (va_game_ok 1), for the meters and Ice / Age
+        h->publish_i64(h->userdata, "va_game_ok", game_ok ? 1 : 0);
+        for (int i = 0; i < 5; ++i) {
+            char n[16];
+            std::snprintf(n, sizeof n, "va_cnt%d", i);
+            h->publish_i64(h->userdata, n, counts[i]);
+        }
+        h->publish_i64(h->userdata, "va_ice_on", ice ? 1 : 0);
+        h->publish_i64(h->userdata, "va_age_on", aged ? 1 : 0);
         h->publish_i64(h->userdata, "va_shaker_idle", result == 0 && !HasPour() && !started ? 1 : 0);
         h->publish_i64(h->userdata, "va_ok", result == 1 ? 1 : 0);
         h->publish_i64(h->userdata, "va_fail", result == 2 ? 1 : 0);

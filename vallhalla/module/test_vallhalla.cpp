@@ -311,6 +311,42 @@ int main() {
     failures += ints["va_fill"] != 0 || ints["va_done"] != 0;
     mod->destroy(inst);
 
+    // ---- the game's own shaker contents, read next to the switch ----
+    {
+        const uint64_t x = kHeap + 0x340230; // the seed spot in this fake heap
+        auto put_bar = [&](std::initializer_list<double> c, double ice, double aged, double total) {
+            const uint64_t off[5] = {0x960, 0x930, 0x900, 0x8D0, 0x8A0};
+            int i = 0;
+            for (double d : c) Put(x + off[i++], d);
+            Put(x + 0x990, total);
+            Put(x + 0x9F0, ice);
+            Put(x + 0x9C0, aged);
+        };
+        Triple(x, 0, 1, 1); // mixing
+        EdenDsmodHostApi hg = host;
+        hg.get_heap_begin = HeapBeginLow;
+        void* ig = mod->create(&hg, "{}");
+        put_bar({3, 4, 1, 2, 0}, 0, 1, 10);
+        for (int i = 0; i < 3; ++i) { ints.clear(); mod->tick(ig, &hg); }
+        const bool read = ints["va_game_ok"] == 1 && ints["va_cnt0"] == 3 && ints["va_cnt1"] == 4 && ints["va_cnt2"] == 1 &&
+                          ints["va_cnt3"] == 2 && ints["va_cnt4"] == 0 && ints["va_ice_on"] == 0 && ints["va_age_on"] == 1 &&
+                          ints["va_grab"] == 1;
+        put_bar({3, 4, 1, 2, 0}, 0, 1, 11); // total does not add up: not trusted
+        ints.clear(); mod->tick(ig, &hg);
+        const bool distrust = ints["va_game_ok"] == 0;
+        put_bar({2, 0, 1, 0, 0}, 0, 0, 3); // Sugar Rush poured with the controller
+        ints.clear(); mod->tick(ig, &hg);
+        ext->on_action(ig, "shake_end", 0);
+        // a quick shake to finish it as mixed
+        for (int i = 0; i < 40; ++i) { ints.clear(); mod->tick(ig, &hg); ext->on_action(ig, "shake", (i / 3) % 2 ? 1 : 5); }
+        ext->on_action(ig, "shake_end", 0);
+        for (int i = 0; i < 3; ++i) { ints.clear(); mod->tick(ig, &hg); }
+        const bool drink = ints["va_result"] == 1 && texts["va_drink_name"] == "Sugar Rush";
+        std::printf("game shaker: read %d, bad total ignored %d, controller-poured Sugar Rush recognised %d\n", read,
+                    distrust, drink);
+        failures += !read || !distrust || !drink;
+        mod->destroy(ig);
+    }
     // ---- shaker physics: leans the way the finger moves, springs back ----
     {
         void* ip = mod->create(&host, "{}");
