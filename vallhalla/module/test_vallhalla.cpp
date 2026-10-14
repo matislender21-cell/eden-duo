@@ -331,7 +331,7 @@ int main() {
         const bool read = ints["va_game_ok"] == 1 && ints["va_cnt0"] == 3 && ints["va_cnt1"] == 4 && ints["va_cnt2"] == 1 &&
                           ints["va_cnt3"] == 2 && ints["va_cnt4"] == 0 && ints["va_ice_on"] == 0 && ints["va_age_on"] == 1 &&
                           ints["va_grab"] == 1;
-        put_bar({3, 4, 1, 2, 0}, 0, 1, 11); // total does not add up: not trusted
+        put_bar({3, 4, 1, 2, 0}, 0, 1, 9); // total below the counts: not trusted
         ints.clear(); mod->tick(ig, &hg);
         const bool distrust = ints["va_game_ok"] == 0;
         put_bar({2, 0, 1, 0, 0}, 0, 0, 3); // Sugar Rush poured with the controller
@@ -451,7 +451,7 @@ int main() {
         failures += !follows || !blends || !ends || !lag_ok || !own;
         mod->destroy(iz);
     }
-    // ---- the bottled A Fedora: a drink ready with nothing poured ----
+    // ---- the bottled A Fedora: counted in the total only; mixed, it is a success ----
     {
         const uint64_t x = kHeap + 0x340230;
         Triple(x, 0, 1, 1);
@@ -465,21 +465,29 @@ int main() {
             mod->tick(ifd, &hf);
             if (ints["va_zr_req"]) { ++zrs; ext->on_action(ifd, "zr_done", 0); }
         };
+        auto game_mix = [&](int on) { Put(x + 0x880, on); Put(x + 0x800, 1 - on); };
         const uint64_t off[5] = {0x960, 0x930, 0x900, 0x8D0, 0x8A0};
         for (auto o : off) Put(x + o, 0);
-        Put(x + 0x990, 0); Put(x + 0x9F0, 0); Put(x + 0x9C0, 0); Put(x + 0x880, 0); Put(x + 0x800, 0);
+        Put(x + 0x990, 0); Put(x + 0x9F0, 0); Put(x + 0x9C0, 0); Put(x + 0x880, 0); Put(x + 0x800, 0); Put(x + 0x860, 0);
         for (int i = 0; i < 70; ++i) tick();
-        const bool empty = ints["va_result"] == 0;
-        Put(x + 0x800, 1); // A Fedora goes in: drink ready
+        const bool empty = ints["va_result"] == 0 && ints["va_grab"] == 0;
+        Put(x + 0x990, 1); Put(x + 0x860, 1); // A Fedora goes in
+        for (int i = 0; i < 3; ++i) tick();
+        const bool grab = ints["va_game_ok"] == 1 && ints["va_grab"] == 1;
+        for (int i = 0; i < 60; ++i) tick();
+        game_mix(1); // ZR in the game
+        for (int i = 0; i < 90; ++i) tick();
+        game_mix(0);
         for (int i = 0; i < 3; ++i) tick();
         const bool fedora = ints["va_result"] == 1 && ints["va_ok"] == 1 && texts["va_drink_name"] == "A Fedora" &&
                             texts["va_drink_src"] == "module:gm:~fedora:0:4";
         for (int i = 0; i < 80; ++i) tick();
-        Put(x + 0x800, 0); // Reset in the game
+        Put(x + 0x990, 0); Put(x + 0x800, 0); // Reset in the game
         for (int i = 0; i < 3; ++i) tick();
         const bool cleared = ints["va_result"] == 0;
-        std::printf("A Fedora: empty bar nothing %d, Fedora is a success %d, Reset clears it %d\n", empty, fedora, cleared);
-        failures += !empty || !fedora || !cleared;
+        std::printf("A Fedora: empty bar nothing %d, shaker grabbable %d, mixed = success %d, Reset clears it %d\n", empty,
+                    grab, fedora, cleared);
+        failures += !empty || !grab || !fedora || !cleared;
         mod->destroy(ifd);
     }
     // ---- shaker physics: leans the way the finger moves, springs back ----

@@ -112,6 +112,7 @@ constexpr u64 kGameTotalOff = 0x990, kGameAgedOff = 0x9C0, kGameIceOff = 0x9F0;
 constexpr u64 kGameMixingOff = 0x880, kGameIdleOff = 0x800;
 // +0x800 is really "a drink is ready" (1 after a mix, failed or not, and at once when the bottled
 // A Fedora goes in; 0 while mixing and after Reset). Ready with no ingredients = A Fedora.
+constexpr u64 kGameFedoraOff = 0x860;
 constexpr int kFedora = 1000; // drink index of the bottled A Fedora (not in kRecipes)
 constexpr u64 kGameMixGrace = 45; // ticks the game may take to follow our own ZR press
 constexpr int kErrN = 4;                 // error windows spawned by a failed drink
@@ -229,7 +230,9 @@ struct Module {
     bool game_ok = false;   // the shaker's contents were read from the game this tick
     bool full_after = false;
     int game_mixing = -1;   // the game's own mixing state: -1 unknown, 0 / 1
-    int game_ready = -1;    // the game has a drink ready (+0x800): -1 unknown, 0 / 1 // the game still held the finished drink's contents (see Tick)
+    int game_ready = -1;    // the game has a drink ready (+0x800): -1 unknown, 0 / 1
+    int bottled = 0;        // units in the game's total beyond the five ingredients (A Fedora)
+    int fedora_flag = -1;   // +0x860 (1 once A Fedora went in) // the game still held the finished drink's contents (see Tick)
     bool ice = false, aged = false;  // Ice / Age toggled on for this drink
     int result = 0;         // 0 nothing yet, 1 a recipe (success), 2 failed
     int drink = -1;         // kRecipes index when result == 1
@@ -394,8 +397,13 @@ struct Module {
             if (!whole(d, 40)) return false;
             sum += d;
         }
-        if (!whole(total, 80) || sum != total || !whole(ice_d, 1) || !whole(aged_d, 1)) return false;
+        // The total also counts a bottled item (A Fedora) that has no slot of its own here, so it
+        // may be a little more than the five counts.
+        if (!whole(total, 80) || total < sum || total > sum + 3 || !whole(ice_d, 1) || !whole(aged_d, 1)) return false;
         for (int i = 0; i < 5; ++i) counts[i] = int(v[i]);
+        bottled = int(total - sum);
+        double f;
+        fedora_flag = ReadF64(cur_x + kGameFedoraOff, f) && (f == 0 || f == 1) ? int(f) : -1;
         ice = ice_d != 0;
         aged = aged_d != 0;
         return true;
@@ -464,11 +472,18 @@ struct Module {
     bool HasPour() const {
         for (int c : counts)
             if (c > 0) return true;
-        return false;
+        return game_ok && bottled > 0; // A Fedora in the shaker
+    }
+    // Only a bottled item in the shaker (A Fedora): mixed, it is that drink.
+    bool OnlyBottled() const {
+        for (int c : counts)
+            if (c > 0) return false;
+        return game_ok && (bottled > 0 || fedora_flag == 1);
     }
 
     void NewDrink() {
         full_after = false;
+        bottled = 0;
         done = 0;
         result = 0;
         drink = -1;
@@ -486,6 +501,10 @@ struct Module {
             started = false;
             done = mix_ticks >= kBlendTicks ? 2 : 1;
             drink = MatchRecipe(counts, ice, aged, done == 2, &big);
+            if (drink < 0 && OnlyBottled()) {
+                drink = kFedora;
+                big = false;
+            }
             result = drink >= 0 ? 1 : 2;
             err_tick = ticks;
             err_closed = 0;
@@ -595,17 +614,7 @@ struct Module {
             double r;
             game_ready = cur_x && ReadF64(cur_x + kGameIdleOff, r) && (r == 0 || r == 1) ? int(r) : -1;
         }
-        const int game_total = counts[0] + counts[1] + counts[2] + counts[3] + counts[4];
-        // The bottled A Fedora: the game has a drink ready with nothing poured. It is a finished
-        // drink at once (Serve), mixed or not.
-        if (game_ok && game_ready == 1 && game_total == 0 && game_mixing != 1 && !started && result == 0) {
-            drink = kFedora;
-            big = false;
-            result = 1;
-            done = 1;
-            done_tick = ticks;
-            err_closed = 0;
-        }
+        const int game_total = counts[0] + counts[1] + counts[2] + counts[3] + counts[4] + (game_ok ? bottled : 0);
         // Reset in the game: no drink ready any more (also clears A Fedora, which has no contents).
         if (game_ok && result != 0 && !started && game_ready == 0 && game_total == 0 && ticks > done_tick + 60) {
             mix_ticks = 0;
@@ -629,7 +638,7 @@ struct Module {
         // the game was seen still holding that drink, so a game that empties on its own at the
         // end of a mix never wipes the result.
         if (game_ok && result != 0 && !started) {
-            int total = 0;
+            int total = bottled;
             for (int c : counts) total += c;
             if (total > 0) full_after = true;
             else if (full_after) {
