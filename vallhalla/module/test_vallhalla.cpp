@@ -347,6 +347,56 @@ int main() {
         failures += !read || !distrust || !drink;
         mod->destroy(ig);
     }
+    // ---- the Mix button: a mix that shakes by itself, like the game ----
+    {
+        const uint64_t x = kHeap + 0x340230;
+        Triple(x, 0, 1, 1);
+        EdenDsmodHostApi hb = host;
+        hb.get_heap_begin = HeapBeginLow;
+        void* ib = mod->create(&hb, "{}");
+        int zrs = 0;
+        auto tick = [&]() {
+            ints.clear();
+            mod->tick(ib, &hb);
+            if (ints["va_zr_req"]) { ++zrs; ext->on_action(ib, "zr_done", 0); }
+        };
+        const uint64_t off[5] = {0x960, 0x930, 0x900, 0x8D0, 0x8A0};
+        for (auto o : off) Put(x + o, 0);
+        Put(x + 0x9C0, 0);
+        const bool empty_refused = !ext->on_action(ib, "mix_btn", 0);
+        // Sugar Rush poured: 2 Adelhyde, 1 Delta (game values), blended by mistake: 6 s
+        Put(x + 0x960, 2); Put(x + 0x900, 1); Put(x + 0x990, 3); Put(x + 0x9F0, 0);
+        for (int i = 0; i < 3; ++i) tick();
+        ext->on_action(ib, "mix_btn", 0);
+        int amin = 0, amax = 0, smin = 0, smax = 0;
+        for (int i = 0; i < 120; ++i) {
+            tick();
+            amin = std::min<int>(amin, int(ints["va_angle"])); amax = std::max<int>(amax, int(ints["va_angle"]));
+            smin = std::min<int>(smin, int(ints["va_sway"])); smax = std::max<int>(smax, int(ints["va_sway"]));
+        }
+        const bool rocking = ints["va_btn_mixing"] == 1 && amin < -10 && amax > 10 && smin < -8 && smax > 8 && zrs == 1;
+        ext->on_action(ib, "shake_end", 0); // a stray shaker drop does not stop it
+        for (int i = 0; i < 260; ++i) tick();
+        const bool still = ints["va_started"] == 1 && ints["va_blended"] == 1;
+        ext->on_action(ib, "mix_btn", 0);
+        for (int i = 0; i < 30; ++i) tick();
+        const bool stopped = ints["va_started"] == 0 && ints["va_done"] == 2 && zrs == 2 && ints["va_result"] == 2;
+        ext->on_action(ib, "reset", 0);
+        for (int i = 0; i < 3; ++i) tick();
+        ext->on_action(ib, "mix_btn", 0);
+        for (int i = 0; i < 90; ++i) tick();
+        ext->on_action(ib, "mix_btn", 0);
+        for (int i = 0; i < 30; ++i) tick();
+        const bool mixed = ints["va_done"] == 1 && ints["va_result"] == 1 && texts["va_drink_name"] == "Sugar Rush" && zrs == 4;
+        ext->on_action(ib, "mix_btn", 0); // Serve
+        for (int i = 0; i < 30; ++i) tick();
+        const bool served = zrs == 5;
+        std::printf("Mix button: empty refused %d, shaker rocks %d (angle %d..%d, sway %d..%d), runs on %d, stop blended %d, "
+                    "1.5 s = mixed Sugar Rush %d, Serve presses ZR %d\n",
+                    empty_refused, rocking, amin, amax, smin, smax, still, stopped, mixed, served);
+        failures += !empty_refused || !rocking || !still || !stopped || !mixed || !served;
+        mod->destroy(ib);
+    }
     // ---- shaker physics: leans the way the finger moves, springs back ----
     {
         void* ip = mod->create(&host, "{}");

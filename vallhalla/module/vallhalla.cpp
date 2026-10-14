@@ -37,6 +37,8 @@
 //               opening alive (it closes after ~4 s without use)
 //   shake       every tick the shaker is carried: argument = movement step 1..5 (fast left,
 //               left, still, right, fast right). Real back-and-forth motion starts the mix (ZR).
+//   mix_btn     the Mix button: starts a mix that shakes by itself (ZR), stops it on the next
+//               tap (5 s or more = blended), or serves a finished drink (ZR)
 //   shake_end   the shaker was let go: stops the mix (ZR again) if a shake started it
 //   zr_done     the package pressed ZR for us
 //   reset       the player pressed Reset: empty the bar and the shaker
@@ -212,6 +214,7 @@ struct Module {
     int last_step = 3;      // last movement step (1..5)
     u64 rev_ticks[2] = {0, 0}; // ticks of the last two direction reversals
     bool started = false;   // we pressed ZR to start a mix that is still running
+    bool by_button = false; // that mix was started with the Mix button (runs until Mix again)
     u64 mix_ticks = 0;      // how long the current / last mix has run
     int done = 0;           // last shake-mix finished: 0 no, 1 mixed, 2 blended (Success!!)
     int counts[5] = {0, 0, 0, 0, 0}; // units in the shaker (the game's own when readable)
@@ -403,6 +406,7 @@ struct Module {
         }
         last_shake = ticks;
         has_pos = true;
+        if (started && by_button) by_button = false; // grabbed mid-mix: the finger takes over
         last_step = int(step);
         const int sgn = step < 3 ? -1 : step > 3 ? 1 : 0;
         if (sgn != 0) {
@@ -416,6 +420,7 @@ struct Module {
         const bool shaking = rev_ticks[0] != 0 && ticks - rev_ticks[0] <= kShakeWindow;
         // start the mix (never with an empty shaker, nor again on a drink already finished)
         if (shaking && !started && result == 0 && HasPour()) {
+            by_button = false;
             started = true;
             mix_ticks = 0;
             done = 0;
@@ -454,9 +459,11 @@ struct Module {
         for (int& c : counts) c = 0;
     }
 
-    void ShakeEnd() {
+    void ShakeEnd(bool button = false) {
         has_pos = false;
-        if (started) { // stop the mix: any mix is a finished drink, 5 s or more is blended
+        if (started && by_button && !button) return; // a Mix-button mix ends with Mix
+        if (started) {
+            by_button = false; // stop the mix: any mix is a finished drink, 5 s or more is blended
             started = false;
             done = mix_ticks >= kBlendTicks ? 2 : 1;
             drink = MatchRecipe(counts, ice, aged, done == 2, &big);
@@ -493,18 +500,29 @@ struct Module {
     static constexpr double kSpring = 0.2;     // pull towards the lean, per tick
     static constexpr double kDamp = 0.3;       // keeps a few wobbles, then settles
     void Physics() {
-        const double v = ticks - tilt_tick <= 2 ? tilt_in : 0.0;
+        double v = ticks - tilt_tick <= 2 ? tilt_in : 0.0;
+        if (started && by_button && ticks - tilt_tick > 2) v = ButtonSwing(); // shakes by itself
         tilt_vf += (v - tilt_vf) * 0.45;
         const double target = std::clamp(tilt_vf * kTiltPerPx, -kTiltMax, kTiltMax);
         tilt_w += kSpring * (target - tilt_a) - kDamp * tilt_w;
         tilt_a = std::clamp(tilt_a + tilt_w, -70.0, 70.0);
         if (std::fabs(tilt_a) < 0.05 && std::fabs(tilt_w) < 0.05 && v == 0) tilt_a = tilt_w = 0;
     }
+    // A Mix-button mix rocks the shaker side to side on its own (the game's look): a sine "finger
+    // speed" into the same physics, faster and harder once the drink is blended.
+    double ButtonPhase() const {
+        const double period = Violent() ? 12.0 : 30.0; // ticks per swing
+        return 2 * 3.14159265358979 * double(mix_ticks) / period;
+    }
+    double ButtonSwing() const {
+        return (Violent() ? 22.0 : 12.0) * std::cos(ButtonPhase());
+    }
     int Angle() const {
         return int(std::lround(tilt_a)) + Jitter(2, 6);
     }
-    int Sway() const { // the finger moves the shaker now: no scripted sideways sway
-        return 0;
+    int Sway() const { // the finger moves the shaker; a Mix-button mix sways it in place
+        if (!(started && by_button)) return 0;
+        return int(std::lround((Violent() ? 10.0 : 16.0) * std::sin(ButtonPhase())));
     }
 
     bool Violent() const {
@@ -549,7 +567,7 @@ struct Module {
         // The shaker only mixes while it is being shaken: once the player stops (no direction
         // change for ~0.67 s, even with the finger still down) the mix stops there -- mixed, or
         // blended if the shaking lasted the 5 s. Holding it still never blends a drink.
-        if (started && has_pos && ticks - rev_ticks[1] > kStopTicks) ShakeEnd();
+        if (started && !by_button && has_pos && ticks - rev_ticks[1] > kStopTicks) ShakeEnd();
         const bool before = Overlay();
         Track();
         game_ok = ReadGame();
@@ -697,6 +715,26 @@ struct Module {
             unused = 0;
             return true;
         }
+        if (a == "mix_btn") { // the bottom screen's Mix / Serve button, like ZR in the game
+            unused = 0;
+            if (started) { // mixing: stop (mixed, or blended after 5 s)
+                ShakeEnd(true);
+                return true;
+            }
+            if (result == 1) { // Serve
+                ++zr_pending;
+                return true;
+            }
+            if (result == 0 && HasPour()) { // start mixing; the shaker shakes on its own
+                started = true;
+                by_button = true;
+                mix_ticks = 0;
+                done = 0;
+                ++zr_pending;
+                return true;
+            }
+            return false;
+        }
         if (a == "mixed") {
             if (mode < 0) manual = true;
             return true;
@@ -711,6 +749,7 @@ struct Module {
         h->publish_i64(h->userdata, "va_proven", s64(Proven()));
         h->publish_i64(h->userdata, "va_zr_req", zr_pending > 0 && ticks - last_zr >= kZrGap ? 1 : 0);
         h->publish_i64(h->userdata, "va_started", started ? 1 : 0);
+        h->publish_i64(h->userdata, "va_btn_mixing", started && by_button ? 1 : 0);
         h->publish_i64(h->userdata, "va_wiggle", Wiggle());
         h->publish_i64(h->userdata, "va_jx", Jitter(0, 7));
         h->publish_i64(h->userdata, "va_jy", Jitter(1, 4));
