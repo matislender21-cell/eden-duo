@@ -27,7 +27,8 @@
 // own game data (never shipped), scaled by an integer factor with nearest neighbour; "swaprg"
 // swaps its red and green channels (the green Serve button made from the game's Mix button).
 //   va_success_frame  0..26 frame of the artist's Success popup while va_done
-//   va_fill     0..100: while shaking, time towards the blend point (5 s); full once let go
+//   va_fill     0..100: while shaking, time towards the blend point (5 s of non-stop shaking);
+//               full once the shake ends (let go, or the player stopped shaking)
 //   va_blended  1 when the drink is (or will be) blended; va_done 1 mixed / 2 blended after
 //               a shake-mix ended (shows "Success!!") until the drink is served or Reset
 // Actions:
@@ -95,6 +96,7 @@ constexpr u64 kEmergencyIdle = 240;      // an emergency opening closes after ~4
 constexpr u64 kBlendTicks = 300;         // the game blends a drink mixed for 5 s
 constexpr int kReversalTicks = 2;        // a direction change counts after this many moving ticks
 constexpr u64 kShakeWindow = 50;         // two reversals within ~0.8 s = shaking
+constexpr u64 kStopTicks = 40;           // no reversal for ~0.67 s = the player stopped shaking
 constexpr u64 kZrGap = 14;               // ticks between two of our ZR presses
 constexpr int kErrN = 4;                 // error windows spawned by a failed drink
 constexpr u64 kErrStep = 7;              // ~0.12 s between two windows popping up
@@ -361,7 +363,8 @@ struct Module {
             ++run;
         }
         const bool shaking = rev_ticks[0] != 0 && ticks - rev_ticks[0] <= kShakeWindow;
-        if (shaking && !started && HasPour()) { // start the mix (never with an empty shaker)
+        // start the mix (never with an empty shaker, nor again on a drink already finished)
+        if (shaking && !started && result == 0 && HasPour()) {
             started = true;
             mix_ticks = 0;
             done = 0;
@@ -478,6 +481,10 @@ struct Module {
         // A drag that ends without a drop (second finger, page change) sends no shake_end: once
         // the shaker's samples stop for ~1/3 s, treat it as let go so the mix never runs on.
         if (has_pos && ticks - last_shake > 20) ShakeEnd();
+        // The shaker only mixes while it is being shaken: once the player stops (no direction
+        // change for ~0.67 s, even with the finger still down) the mix stops there -- mixed, or
+        // blended if the shaking lasted the 5 s. Holding it still never blends a drink.
+        if (started && has_pos && ticks - rev_ticks[1] > kStopTicks) ShakeEnd();
         const bool before = Overlay();
         Track();
         if (mode != last_mode) {

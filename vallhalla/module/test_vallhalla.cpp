@@ -187,13 +187,15 @@ int main() {
     std::printf("after shaking: ZR %d (want 1), started %lld, frames used 0x%x\n", zr,
                 (long long)ints["va_started"], seen_frames);
     failures += zr != 1 || ints["va_started"] != 1;
-    for (int i = 0; i < 160; ++i) frame(at(700, 650));
+    int sk = 40; // keeps the left-right shake going from where it is
+    auto shaking = [&]() { const int x = 700 + ((sk / 4) % 2 ? 40 : -40) * (sk % 4) / 4; ++sk; return at(x, 650); };
+    for (int i = 0; i < 160; ++i) frame(shaking());
     std::printf("~3 s in: fill %lld blended %lld\n", (long long)ints["va_fill"], (long long)ints["va_blended"]);
     failures += ints["va_fill"] < 50 || ints["va_fill"] > 70 || ints["va_blended"] != 0;
-    for (int i = 0; i < 140; ++i) frame(at(700, 650));
+    for (int i = 0; i < 140; ++i) frame(shaking());
     {
         int seen = 0;
-        for (int i = 0; i < 60; ++i) { frame(at(700, 650)); seen |= 1 << ints["va_wiggle"]; }
+        for (int i = 0; i < 60; ++i) { frame(shaking()); seen |= 1 << ints["va_wiggle"]; }
         std::printf("shaker loop while mixing: frames seen 0x%x, angle now %lld sway %lld\n", seen,
                     (long long)ints["va_angle"], (long long)ints["va_sway"]);
         failures += ints["va_angle"] != 0 && ints["va_angle"] != 6 && ints["va_angle"] != 44 && ints["va_angle"] != -45 &&
@@ -204,7 +206,7 @@ int main() {
     {
         int seen = 0, moved = 0;
         for (int i = 0; i < 30; ++i) {
-            frame(at(700, 650));
+            frame(shaking());
             seen |= 1 << ints["va_wiggle"];
             moved += ints["va_jx"] != 0 || ints["va_jy"] != 0;
         }
@@ -242,6 +244,51 @@ int main() {
                 (long long)ints["va_blended"]);
     failures += mid_fill > 10 || ints["va_fill"] != 100 || ints["va_done"] != 1 || ints["va_blended"] != 0;
     zr -= 2; // that mix pressed ZR twice more
+    {   // shaking a finished drink again does nothing (Reset or serve first)
+        last_x = -1;
+        for (int i = 0; i < 40; ++i) { const int x = 700 + ((i / 4) % 2 ? 40 : -40) * (i % 4) / 4; frame(at(x, 650)); }
+        ext->on_action(inst, "shake_end", 0);
+        for (int i = 0; i < 30; ++i) frame(-1);
+        std::printf("shaking a finished drink: ZR %d (want 2, no new presses)\n", zr);
+        failures += zr != 2;
+    }
+    {   // stop shaking while still holding: the mix stops there, as mixed
+        ext->on_action(inst, "reset", 0);
+        ext->on_action(inst, "pour", 0);
+        last_x = -1;
+        sk = 0;
+        for (int i = 0; i < 90; ++i) frame(shaking()); // ~1.5 s of shaking
+        const bool going = ints["va_started"] == 1;
+        for (int i = 0; i < 20; ++i) frame(at(700, 650)); // finger still, still held
+        const bool grace = ints["va_started"] == 1;        // a short pause is not a stop
+        for (int i = 0; i < 40; ++i) frame(at(700, 650));
+        const bool stopped = ints["va_started"] == 0 && ints["va_done"] == 1 && ints["va_blended"] == 0 &&
+                             ints["va_angle"] == 0 && zr == 4;
+        for (int i = 0; i < 400; ++i) frame(at(700, 650)); // holding it still never blends
+        const bool still = ints["va_done"] == 1 && ints["va_blended"] == 0 && zr == 4;
+        ext->on_action(inst, "shake_end", 0);
+        for (int i = 0; i < 10; ++i) frame(-1);
+        std::printf("stop shaking: mixing %d, short pause kept %d, stopped as mixed %d, holding never blends %d\n",
+                    going, grace, stopped, still);
+        failures += !going || !grace || !stopped || !still;
+        ext->on_action(inst, "reset", 0);
+        zr = 2;
+    }
+    {   // a pause too long to blend: 3 s, stop, then shaking again cannot reach blended
+        ext->on_action(inst, "pour", 0);
+        last_x = -1;
+        sk = 0;
+        for (int i = 0; i < 180; ++i) frame(shaking());
+        for (int i = 0; i < 60; ++i) frame(at(700, 650));
+        for (int i = 0; i < 200; ++i) frame(shaking());
+        ext->on_action(inst, "shake_end", 0);
+        for (int i = 0; i < 10; ++i) frame(-1);
+        std::printf("3 s + stop + 3 s: done %lld (want 1 mixed), blended %lld\n", (long long)ints["va_done"],
+                    (long long)ints["va_blended"]);
+        failures += ints["va_done"] != 1 || ints["va_blended"] != 0;
+        ext->on_action(inst, "reset", 0);
+        zr = 2;
+    }
     ext->on_action(inst, "pour", 0); // something in the shaker
     for (int i = 0; i < 40; ++i) { // shake again, then the drag is cancelled (no shake_end)
         const int x = 700 + ((i / 4) % 2 ? 40 : -40) * (i % 4) / 4;
