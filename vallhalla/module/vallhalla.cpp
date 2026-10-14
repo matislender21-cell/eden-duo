@@ -136,6 +136,17 @@ constexpr Recipe kRecipes[] = {
     {"Suplex", {0, 4, 0, 3, 3}, true, false, false},
     {"Zen Star", {4, 4, 4, 4, 4}, true, false, false},
 };
+// Each drink's sprite in the game's data (35x53), by its exact name as the probe listed it on the
+// player's copy (14 Oct). The game spells Sugar Rush's sprite "Sugar Sush spr". Frothy Water has
+// no 35x53 sprite there: it keeps a name search until its sprite is found.
+constexpr const char* kDrinkSprite[] = {
+    "Badtouch spr", "Beer spr", "Bleeding Jane spr", "Bloom Light spr", "Blue Fairy spr", "Brandtini spr",
+    "Cobalt Velvet spr", "Crevice Spike spr", "Flaming Moai spr", "Fluffy Dream spr", "Fringe Weaver spr",
+    "~frothy", "Grizzly Temple spr", "Gut Punch spr", "Marsblast spr", "Mercuryblast spr", "Moonblast spr",
+    "Piano Man spr", "Piano Woman spr", "Piledriver spr", "Sparkle Star spr", "Sugar Sush spr",
+    "Sunshine Cloud spr", "Suplex spr", "Zen Star spr",
+};
+static_assert(sizeof kDrinkSprite / sizeof kDrinkSprite[0] == sizeof kRecipes / sizeof kRecipes[0]);
 constexpr int kShakerMax = 20; // units the shaker holds (a Big drink is every amount doubled)
 
 // -1 = failed, else index into kRecipes; *big set for a doubled drink.
@@ -702,15 +713,18 @@ struct Module {
             h->publish_i64(h->userdata, n, ErrVisible(i) ? ErrFrame(i) : 0);
         }
         if (result == 1) {
-            std::string key = std::string("module:gm:~") + kRecipes[drink].name + "@35x53:0:4";
+            // exact names go in as their lookup key ("Sugar Sush spr" -> "sugarsushspr": no spaces in the src)
+            const std::string spr = kDrinkSprite[drink][0] == '~' ? std::string(kDrinkSprite[drink])
+                                                                   : vallhalla::GmReader::Key(kDrinkSprite[drink]);
+            std::string key = "module:gm:" + spr + ":0:4";
             h->publish_text(h->userdata, "va_drink_src", key.c_str());
             h->publish_text(h->userdata, "va_drink_name",
                             (std::string(kRecipes[drink].name) + (big ? " (Big)" : "")).c_str());
-            std::string q = std::string("~") + kRecipes[drink].name + "@35x53";
+            const std::string q = kDrinkSprite[drink];
             std::scoped_lock l2{picked_mutex};
             const auto it = picked.find(q);
             h->publish_text(h->userdata, "va_drink_sprite",
-                            ("sprite: " + (it == picked.end() ? std::string("loading...") : it->second)).c_str());
+                            ("sprite: " + (q[0] != '~' ? q : it == picked.end() ? std::string("loading...") : it->second)).c_str());
         } else if (result == 2) {
             h->publish_text(h->userdata, "va_drink_src", "module:gm:glitchbottle:0:4");
             h->publish_text(h->userdata, "va_drink_name", "Failed drink");
