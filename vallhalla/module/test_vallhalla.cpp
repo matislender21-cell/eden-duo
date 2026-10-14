@@ -1,5 +1,7 @@
 // Host-side test for the VAllhalla module: fake heap with the talking/mixing switch triple,
 // fades between states, decoys, and the block moving to a new address (a new night).
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -155,10 +157,12 @@ int main() {
     state(1);
     run(30);
     int zr = 0;
+    int64_t tilt_arg = 10; // the finger's sideways speed bucket, set by at()
     auto frame = [&](int64_t arg) { // one tick as the package runs it
         ints.clear();
         mod->tick(inst, &host);
         if (arg >= 0) ext->on_action(inst, "shake", arg);
+        if (arg >= 0) ext->on_action(inst, "tilt", tilt_arg);
         if (ints["va_zr_req"]) { // zr_auto + zr_ack
             ++zr;
             ext->on_action(inst, "zr_done", 0);
@@ -169,6 +173,7 @@ int main() {
     auto at = [&](int x, int) -> int64_t {
         const int d = last_x < 0 ? 0 : x - last_x;
         last_x = x;
+        tilt_arg = std::clamp<int64_t>((d >= 0 ? d + 1 : d - 1) / 3, -10, 10) + 10;
         return d < -12 ? 1 : d < -2 ? 2 : d <= 2 ? 3 : d <= 12 ? 4 : 5;
     };
     for (int i = 0; i < 120; ++i) frame(at(700, 650)); // grab and hold still
@@ -198,8 +203,6 @@ int main() {
         for (int i = 0; i < 60; ++i) { frame(shaking()); seen |= 1 << ints["va_wiggle"]; }
         std::printf("shaker loop while mixing: frames seen 0x%x, angle now %lld sway %lld\n", seen,
                     (long long)ints["va_angle"], (long long)ints["va_sway"]);
-        failures += ints["va_angle"] != 0 && ints["va_angle"] != 6 && ints["va_angle"] != 44 && ints["va_angle"] != -45 &&
-                    ints["va_angle"] != -13;
         failures += seen == 1;
     }
     std::printf("~6.3 s in: fill %lld blended %lld\n", (long long)ints["va_fill"], (long long)ints["va_blended"]);
@@ -263,7 +266,7 @@ int main() {
         const bool grace = ints["va_started"] == 1;        // a short pause is not a stop
         for (int i = 0; i < 40; ++i) frame(at(700, 650));
         const bool stopped = ints["va_started"] == 0 && ints["va_done"] == 1 && ints["va_blended"] == 0 &&
-                             ints["va_angle"] == 0 && zr == 4;
+                             std::abs(ints["va_angle"]) <= 1 && zr == 4;
         for (int i = 0; i < 400; ++i) frame(at(700, 650)); // holding it still never blends
         const bool still = ints["va_done"] == 1 && ints["va_blended"] == 0 && zr == 4;
         ext->on_action(inst, "shake_end", 0);
@@ -303,6 +306,26 @@ int main() {
     failures += ints["va_fill"] != 0 || ints["va_done"] != 0;
     mod->destroy(inst);
 
+    // ---- shaker physics: leans the way the finger moves, springs back ----
+    {
+        void* ip = mod->create(&host, "{}");
+        auto step = [&](int64_t t) { ints.clear(); mod->tick(ip, &host); if (t >= 0) ext->on_action(ip, "tilt", t); };
+        int64_t maxr = 0, minl = 0, over = 0;
+        for (int i = 0; i < 30; ++i) { step(16); maxr = std::max(maxr, ints["va_angle"]); } // right, 18 px/tick
+        const int64_t held_r = ints["va_angle"];
+        for (int i = 0; i < 30; ++i) { step(4); minl = std::min(minl, ints["va_angle"]); }  // left
+        const int64_t held_l = ints["va_angle"];
+        for (int i = 0; i < 15; ++i) { step(10); over = std::max(over, ints["va_angle"]); } // stop: wobbles past 0
+        for (int i = 0; i < 60; ++i) step(-1); // let go
+        const int64_t rest = ints["va_angle"];
+        for (int i = 0; i < 20; ++i) step(20); // a very fast flick is capped
+        const int64_t cap = ints["va_angle"];
+        std::printf("physics: right lean %lld, left lean %lld, wobble past upright %lld, at rest %lld, capped %lld\n",
+                    (long long)held_r, (long long)held_l, (long long)over, (long long)rest, (long long)cap);
+        failures += !(held_r >= 20 && held_r <= 35) || !(held_l <= -20 && held_l >= -35) || over <= 0 || rest != 0 ||
+                    cap > 55 || maxr > 45 || minl < -50;
+        mod->destroy(ip);
+    }
     // ---- seed: the usual spot is trusted from the first tick ----
     {
         const uint64_t seed = kHeap + 0x340230;

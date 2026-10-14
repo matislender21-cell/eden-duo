@@ -20,9 +20,8 @@
 //   va_started  1 while a shake-started mix is running in the game
 //   va_wiggle   0..11 frame of the artist's shaker loop while mixing (violent once blended)
 //   va_jx/va_jy jitter offsets in px for the shaker while the shake is violent (blended)
-//   va_angle    shaker tilt in degrees (+ = clockwise) and va_sway its sideways sway in the
-//               artist's GIF pixels: her swing (0 6 20 44 20 6 0 -13 -27 -45 -27 -13, 140 ms
-//               a step) while mixing, a hard +-45 rattle once blended, 0 otherwise
+//   va_angle    shaker tilt in degrees (+ = clockwise): leans the way the finger moves and
+//               springs back upright (physics), with a rattle once blended; va_sway is 0 now
 // Images: "module:gm:<sprite name>[:<frame>[:<scale>[:swaprg][:pad<X>x<Y>]]]" -> that sprite from the player's
 // own game data (never shipped), scaled by an integer factor with nearest neighbour; "swaprg"
 // swaps its red and green channels (the green Serve button made from the game's Mix button).
@@ -52,6 +51,7 @@
 //   mixed       the player pressed Mix: while not sure, bring the overlay back (0.12 behaviour)
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -207,6 +207,12 @@ struct Module {
     int zr_pending = 0;     // ZR presses still to be made
     u64 last_zr = 0;        // tick of our last ZR press
     u64 last_shake = 0;     // tick of the last shake sample on the shaker
+    // shaker physics: it tilts the way the finger moves and springs back, wobbling a little
+    double tilt_in = 0;     // finger's sideways speed this tick (px/tick, from the "tilt" action)
+    u64 tilt_tick = 0;      // tick of the last "tilt" sample (none for a while = not carried)
+    double tilt_vf = 0;     // smoothed finger speed
+    double tilt_a = 0;      // shaker angle in degrees (+ = clockwise: top leans right)
+    double tilt_w = 0;      // its angular speed (degrees/tick)
 
     bool ReadF64(u64 a, double& d) const {
         const u8* p = host.get_read_pointer ? host.get_read_pointer(host.userdata, a, 8) : nullptr;
@@ -434,13 +440,26 @@ struct Module {
         }
         return int((ms / 140) % 12);
     }
-    int Angle() const {
-        const int k = SwingStep();
-        return k < 0 ? 0 : kSwingAngle[k];
+    // The shaker's tilt follows the finger: its sideways speed sets the lean it springs towards
+    // (right = clockwise), so a shake swings it side to side and it wobbles upright when the
+    // finger stops or lets go. Once blended a small angle rattle rides on top.
+    static constexpr double kTiltPerPx = 1.6;  // degrees of lean per px/tick of finger speed
+    static constexpr double kTiltMax = 50;     // degrees
+    static constexpr double kSpring = 0.2;     // pull towards the lean, per tick
+    static constexpr double kDamp = 0.3;       // keeps a few wobbles, then settles
+    void Physics() {
+        const double v = ticks - tilt_tick <= 2 ? tilt_in : 0.0;
+        tilt_vf += (v - tilt_vf) * 0.45;
+        const double target = std::clamp(tilt_vf * kTiltPerPx, -kTiltMax, kTiltMax);
+        tilt_w += kSpring * (target - tilt_a) - kDamp * tilt_w;
+        tilt_a = std::clamp(tilt_a + tilt_w, -70.0, 70.0);
+        if (std::fabs(tilt_a) < 0.05 && std::fabs(tilt_w) < 0.05 && v == 0) tilt_a = tilt_w = 0;
     }
-    int Sway() const {
-        const int k = SwingStep();
-        return k < 0 ? 0 : kSwingSway[k];
+    int Angle() const {
+        return int(std::lround(tilt_a)) + Jitter(2, 6);
+    }
+    int Sway() const { // the finger moves the shaker now: no scripted sideways sway
+        return 0;
     }
 
     bool Violent() const {
@@ -478,6 +497,7 @@ struct Module {
     void Tick() {
         ++ticks;
         if (started) ++mix_ticks;
+        Physics();
         // A drag that ends without a drop (second finger, page change) sends no shake_end: once
         // the shaker's samples stop for ~1/3 s, treat it as let go so the mix never runs on.
         if (has_pos && ticks - last_shake > 20) ShakeEnd();
@@ -614,6 +634,12 @@ struct Module {
         if (a == "age_toggle") {
             if (done) NewDrink();
             aged = !aged;
+            return true;
+        }
+        if (a == "tilt") { // the finger's sideways speed this tick: 0..20 = -30..+30 px/tick
+            if (arg < 0 || arg > 20) return false;
+            tilt_in = double(arg - 10) * 3.0;
+            tilt_tick = ticks;
             return true;
         }
         if (a == "zr_done") {
